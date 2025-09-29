@@ -11,7 +11,7 @@ This repository contains the code and data accompanying the paper:
 
 > **Continuous Intraday Trading: An Open-Source Multi-Market Bidding Framework for Energy Storage Systems**
 > Accepted at *ACM e-Energy 2025*
-> \[Link to paper – coming soon]
+> \(https://dl.acm.org/doi/full/10.1145/3679240.3734631)
 
 
 ---
