@@ -15,7 +15,9 @@ Requires:
 import os
 from pathlib import Path
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(), override=True)
+
 
 from src.data_acquisition.entso_e.entso_e import fill_database_with_entsoe_data
 from src.data_acquisition.epex_sftp.intraday_transactions_new_format import (
@@ -110,3 +112,4 @@ if not os.path.exists(output_path):
 
 # Save the hourly data as a CSV file
 data_hourly.to_csv(Path(output_path, f"data_{data_start}_{data_end}_hourly.csv"))
+
