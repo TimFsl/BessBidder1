@@ -7,6 +7,11 @@ from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 
 from src.data_acquisition.postgres_db.postgres_db_hooks import ThesisDBHook
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from entsoe import EntsoePandasClient
+import requests
+
 
 load_dotenv()
 POSTGRES_USERNAME = os.getenv("POSTGRES_USER")
@@ -16,27 +21,63 @@ COUNTRY_CODE = "DE_LU"
 
 
 def fill_database_with_entsoe_data(start: pd.Timestamp, end: pd.Timestamp) -> None:
+    """
+    Fetch ENTSO-E data month-by-month with visible progress, short timeouts,
+    and safe per-call try/except so one failing month/call won't block the loop.
+    Data is written to DB immediately after each successful fetch.
+    """
     months = pd.date_range(start, end, freq="MS")
     entsoe_hook = EntsoeHook(api_key=os.getenv("ENTSOE_API_KEY"))
     thesis_db_hook = ThesisDBHook(username=POSTGRES_USERNAME, hostname=POSTGRES_DB_HOST)
 
     for month in months:
-        da_auction_prices = entsoe_hook.get_day_ahead_auction_prices(
-            month, month + relativedelta(months=1)
-        )
-        intraday_auction_prices = entsoe_hook.get_exaa_prices(
-            month, month + relativedelta(months=1)
-        )
-        demand_df = entsoe_hook.get_demand_forecast_day_ahead(
-            month, month + relativedelta(months=1)
-        )
-        vre_df = entsoe_hook.get_variable_renewables_forecast_day_ahead(
-            month, month + relativedelta(months=1)
-        )
-        thesis_db_hook.upload_entsoe_auction_prices(df=da_auction_prices)
-        thesis_db_hook.upload_entsoe_auction_prices(df=intraday_auction_prices)
-        thesis_db_hook.upload_entsoe_forecasts(df=demand_df)
-        thesis_db_hook.upload_entsoe_forecasts(df=vre_df)
+        month_end = month + relativedelta(months=1)
+        print(f"\n[INFO] Processing {month.date()} → {month_end.date()}")
+
+        # 1) DA auction prices (60min)
+        try:
+            da_auction_prices = entsoe_hook.get_day_ahead_auction_prices(month, month_end)
+            print(f"  DA 60min rows: {len(da_auction_prices)}")
+            if len(da_auction_prices):
+                thesis_db_hook.upload_entsoe_auction_prices(df=da_auction_prices)
+                print("  → inserted DA 60min")
+        except Exception as e:
+            print(f"  [WARN] DA 60min failed: {e}")
+
+        # 2) 15min day-ahead prices (named 'EXAA' in your code, but fetched via ENTSO-E)
+        try:
+            exaa_15min = entsoe_hook.get_exaa_prices(month, month_end)
+            print(f"  DA 15min rows: {len(exaa_15min)}")
+            if len(exaa_15min):
+                thesis_db_hook.upload_entsoe_auction_prices(df=exaa_15min)
+                print("  → inserted DA 15min")
+        except Exception as e:
+            print(f"  [WARN] DA 15min failed: {e}")
+
+        # 3) Demand forecast (D-1)
+        try:
+            demand_df = entsoe_hook.get_demand_forecast_day_ahead(month, month_end)
+            print(f"  Load forecast rows: {len(demand_df)}")
+            if len(demand_df):
+                thesis_db_hook.upload_entsoe_forecasts(df=demand_df)
+                print("  → inserted load forecast")
+        except Exception as e:
+            print(f"  [WARN] Load forecast failed: {e}")
+
+        # 4) Variable renewables (wind/solar) forecast (D-1)
+        try:
+            vre_df = entsoe_hook.get_variable_renewables_forecast_day_ahead(month, month_end)
+            print(f"  VRE forecast rows: {len(vre_df)}")
+            if len(vre_df):
+                thesis_db_hook.upload_entsoe_forecasts(df=vre_df)
+                print("  → inserted VRE forecast")
+        except Exception as e:
+            print(f"  [WARN] VRE forecast failed: {e}")
+
+        # Optional: be gentle with the API to avoid 429 rate limits
+        # time.sleep(0.5)
+
+    print("\n[INFO] Done.")
 
 
 class EntsoeHook:
@@ -47,7 +88,28 @@ class EntsoeHook:
     @property
     def client(self):
         if self._client is None:
-            self._client = EntsoePandasClient(api_key=self._api_key)
+            # Important: short timeouts to avoid hanging HTTP reads,
+            # and fewer retries to fail fast and move on to the next month.
+            self._client = EntsoePandasClient(
+                api_key=self._api_key,
+                retry_count=2,   # reduce default retry attempts
+                timeout=30       # seconds: applies to both connect & read
+            )
+
+            # Harden the underlying requests session (handles 429/5xx nicely).
+            sess: requests.Session = self._client.session
+            retries = Retry(
+                total=3,                 # overall retry budget
+                connect=2,
+                read=2,
+                backoff_factor=1.0,      # 1s, 2s, 4s between retries
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=["GET"]
+            )
+            adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
+            sess.mount("https://", adapter)
+            sess.mount("http://", adapter)
+
         return self._client
 
     def get_demand_forecast_day_ahead(
