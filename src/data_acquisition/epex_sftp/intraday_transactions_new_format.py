@@ -16,6 +16,11 @@ from dotenv import load_dotenv
 from sqlalchemy import Engine, create_engine
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
+import platform
+
+if platform.system() == "Darwin":
+    os.environ.setdefault("TMPDIR", "/tmp")
+    tempfile.tempdir = "/tmp"
 
 load_dotenv()
 
@@ -81,6 +86,8 @@ def download_intraday_transaction_zip_archive(
 ) -> Path:
     """Download the ZIP file from the SFTP server."""
     sftp = sftp_connect()
+    if sftp is None:
+        raise ConnectionError("SFTP connection failed")
 
     files = sftp.listdir(remote_path.as_posix())
     zip_files = [
@@ -114,16 +121,13 @@ def unpack_archive(path: Path) -> Path:
         extract_path = path.parent
         archive.extractall(extract_path)
 
-    # bwcloud specific extration path to avoid overflow of system storage
-    nested_extract_path = "/dev/shm/tmp-extract/"
+    nested_extract_path = extract_path
+    Path(nested_extract_path).mkdir(parents=True, exist_ok=True)
 
-    # Check for any nested ZIP files and unpack them
+
     for extracted_file in extract_path.glob("**/*.zip"):
         with zipfile.ZipFile(extracted_file, "r") as nested_archive:
-            # nested_extract_path = extracted_file.parent
             nested_archive.extractall(nested_extract_path)
-
-        # Optional: Delete the nested ZIP file after extraction if not needed
         extracted_file.unlink()
 
     return extract_path
@@ -243,7 +247,7 @@ def execute_etl_transactions_new_format(years: List[int]) -> None:
         f"postgresql://{POSTGRES_USERNAME}{password_for_url}@{POSTGRES_DB_HOST}/{THESIS_DB_NAME}"
     )
     for year in years:
-        with tempfile.TemporaryDirectory() as tmpdirname:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as tmpdirname:
             transaction_archive_location = download_intraday_transaction_zip_archive(
                 remote_path=TRANSACTION_HISTORICAL_DATA_PATH_PREFIX,
                 local_path=Path(tmpdirname),
