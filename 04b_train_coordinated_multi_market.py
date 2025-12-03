@@ -145,9 +145,9 @@ if __name__ == "__main__":
             reward_log_path=os.path.join(versioned_log_path, "reward_components.csv"),
             policy_kwargs=policy_kwargs,
             ent_coef=0.05,
-            n_steps=512,
-            clip_range=0.4,
-            batch_size=128,
+            n_steps=1024,
+            clip_range=0.2,
+            batch_size=256,
             vf_coef=0.2,
             learning_rate=linear_schedule(0.003),
         )

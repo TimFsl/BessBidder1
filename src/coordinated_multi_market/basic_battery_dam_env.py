@@ -29,7 +29,10 @@ class BasicBatteryDAM(gym.Env):
         round_trip_efficiency: np.float32 = 1.0,
         start_end_soc: np.float32 = 0.0,
     ):
-        self._episode_id = 0
+        self._episode_id = -1
+        self._step_in_episode = 0
+        self._global_step = 0
+
         self._modus = modus
         self._logging_path = logging_path
         self._input_data = input_data
@@ -108,113 +111,188 @@ class BasicBatteryDAM(gym.Env):
         self._current_soc = self._start_end_soc
         self._remaining_cycles = 1
         self._total_profit = 0.0
+        
+        self._episode_id += 1
+        self._step_in_episode = 0
+
         observation = self._get_obs()
         return observation, {}  # empty info dict
 
     def step(
         self, action: ActType
     ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
-        """
+        # IDs für diesen Step einfrieren
+        current_episode_id = self._episode_id
+        current_step_in_episode = self._step_in_episode
+        timestep_in_day = self._current_time_step
 
-        :param action:
-        :return:
-        """
+
         action_continuous = self._map_discrete_action_to_continuous(action)
-        quantity = np.clip(
-            action_continuous, -1.0, 1.0
-        )  # Ensure it's within the valid range
+        quantity = np.clip(action_continuous, -1.0, 1.0)
 
-        clearing_price = self._realized_price_vector[self._current_time_step]
-        clearing_price_scaled = self._realized_price_vector_scaled[
-            self._current_time_step
-        ]
+        clearing_price = self._realized_price_vector[timestep_in_day]
 
         if quantity > 0:
             sell_decision = min(self._current_soc, quantity, 2 * self._remaining_cycles)
             realized_quantity = sell_decision
         elif quantity < 0:
-            # buy_decision = quantity
             buy_decision = min(
                 self._capacity - self._current_soc,
-                (-1) * quantity,
+                -quantity,
                 2 * self._remaining_cycles,
             )
-            realized_quantity = (-1) * buy_decision
+            realized_quantity = -buy_decision
         else:
-            realized_quantity = 0
+            realized_quantity = 0.0
 
-        #reward = clearing_price * realized_quantity / (85 / 24)
-        reward = (clearing_price * realized_quantity) / 85 
+        reward = (clearing_price * realized_quantity) / 85
 
-        delta_soc = 0
-        delta_soc = (-1) * realized_quantity
+        soc_before = self._current_soc
+        delta_soc = -realized_quantity
+        self._current_soc += delta_soc
 
-        profit = 0
         if realized_quantity < 0:
             profit = clearing_price * realized_quantity * (1 / self._efficiency)
         elif realized_quantity > 0:
             profit = clearing_price * realized_quantity * self._efficiency
+        else:
+            profit = 0.0
 
-        self._current_soc += delta_soc
         delta_cycles = abs(delta_soc) / (2 * self._capacity)
         self._remaining_cycles -= delta_cycles
-
         self._realized_quantity_t_minus_1 = realized_quantity
 
-        game_over = False
-        if round(self._remaining_cycles, 2) <= 0:
-            game_over = True
+        game_over = round(self._remaining_cycles, 2) <= 0
 
         self._total_profit += profit
+
+        # timestamp (Index) holen
+        timestamp = self._timestamps[timestep_in_day]
 
         info = self._get_info()
         observation = self._get_obs()
 
-        self._last_time_step = self._current_time_step
-        self._current_time_step += 1
-        # terminated = True if (self._current_time_step == PERIOD_LENGTH) or game_over else False
-        terminated = (
-            True if (self._current_time_step == PERIOD_LENGTH) or game_over else False
-        )
-
-        if terminated:
-            self._episode_id += 1
-
-            # check if we have capacity left in battery
-            if self._current_soc > 0:
-                # penalty because missed profit
-                penalty = self._current_soc    # oder 2 * self._current_soc, etc.
-                reward = -penalty
         
-        # cast reward to float
         reward = float(reward)
 
+        # Debug-Logging, das exakt dem Obs entspricht
+        self.log_debug_step(
+            episode_id=current_episode_id,
+            step_in_episode=current_step_in_episode,
+            timestep_in_day=timestep_in_day,
+            timestamp=timestamp,
+            obs=observation,
+            action_discrete=action,
+            action_continuous=quantity,
+            realized_quantity=realized_quantity,
+            soc_before=soc_before,
+            soc_after=self._current_soc,
+            remaining_cycles=self._remaining_cycles,
+            reward=reward,
+            realized_price=clearing_price,
+            forecast_price_current = self._forecasted_price_vector[timestep_in_day],
+        )
+
+        # reward logging
         self.log_data(
             modus=self._modus,
-            timestamp=self._timestamps[self._last_time_step],
-            episode_id=self._episode_id,
-            timestep=self._last_time_step,
+            timestamp=timestamp,
+            episode_id=current_episode_id,
+            timestep=timestep_in_day,
             observations=observation,
             action=action,
             reward=reward,
-            dam_price_forecast=self._forecasted_price_vector[self._last_time_step],
+            dam_price_forecast=self._forecasted_price_vector[timestep_in_day],
             dam_price=clearing_price,
             price_bid=np.nan,
             capacity_bid=quantity,
             capacity_trade=realized_quantity,
             delta_soc=delta_soc,
             remaining_cycles=self._remaining_cycles,
-            # remaining_cycles=np.nan,
             profit=profit,
         )
 
-        return (
-            observation,
-            reward,
-            terminated,
-            False,
-            info,
-        )
+        # Zeitindex erhöhen, Episode beenden?
+        self._current_time_step += 1
+        terminated = (self._current_time_step == PERIOD_LENGTH) or game_over
+        terminated = bool(terminated)
+
+        if terminated and self._current_soc > 0:
+            # penalty because missed profit
+            penalty = self._current_soc * 85
+            reward = -float(penalty)
+
+        # Step-/Global-Counter erhöhen
+        self._step_in_episode += 1
+        self._global_step += 1
+
+        # terminated → SB3 ruft dann reset(), dort wird episode_id++ gemacht
+        return observation, reward, terminated, False, info
+
+
+    # New logging function for debug steps
+    def log_debug_step(
+        self,
+        episode_id: int,
+        step_in_episode: int,
+        timestep_in_day: int,
+        timestamp,
+        obs: np.ndarray,
+        action_discrete: int,
+        action_continuous: float,
+        realized_quantity: float,
+        soc_before: float,
+        soc_after: float,
+        remaining_cycles: float,
+        reward: float,
+        realized_price: float,
+        forecast_price_current: float,
+    ):
+        # Pfad für Debug-CSV
+        path = os.path.join(self._logging_path, "debug_obs_steps.csv")
+
+        # Timestamp zu UTC + Europe/Berlin konvertieren
+        ts = pd.to_datetime(timestamp)
+        if ts.tz is None:
+            ts = ts.tz_localize("Europe/Berlin")
+        ts_utc = ts.tz_convert("UTC")
+        ts_local = ts.tz_convert("Europe/Berlin")
+
+        row = {
+            "global_step": self._global_step,
+            "episode_id": episode_id,
+            "step_in_episode": step_in_episode,
+            "timestep_in_day": timestep_in_day,
+            "time_utc": ts_utc.isoformat(),
+            "time_local": ts_local.isoformat(),
+            "action_discrete": action_discrete,
+            "action_continuous": action_continuous,
+            "realized_quantity": realized_quantity,
+            "soc_before": soc_before,
+            "soc_after": soc_after,
+            "remaining_cycles": remaining_cycles,
+            "reward": reward,
+            "realized_price": realized_price,
+            "forecast_price_current": forecast_price_current,
+            # komplette Observation – exakt das, was der Agent sieht
+            "obs_array": obs.tolist(),
+        }
+
+        # Optional: Obs-Komponenten als einzelne Spalten
+        for i, v in enumerate(obs):
+            row[f"obs_{i}"] = v
+
+        df = pd.DataFrame([row])
+
+        write_header = not os.path.isfile(path)
+        df.to_csv(path, mode="a", header=write_header, index=False)
+
+
+
+
+
+
+
 
     def _get_info(self):
         return {
