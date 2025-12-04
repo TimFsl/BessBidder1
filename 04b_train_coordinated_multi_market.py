@@ -149,7 +149,7 @@ if __name__ == "__main__":
             clip_range=0.4,
             batch_size=128,
             vf_coef=0.2,
-            learning_rate=linear_schedule(0.003),
+            learning_rate=linear_schedule(1e-4),
             gamma = 0.99,
         )
         reset_num_timesteps = True

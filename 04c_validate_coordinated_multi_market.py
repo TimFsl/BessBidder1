@@ -54,11 +54,11 @@ def _compute_series_stats(series: pd.Series):
 if __name__ == "__main__":
 
     # -------- Parameter für die Validierung --------
-    model_number = "1"
+    model_number = "7"
 
     # Start-Checkpoint, ab dem validiert werden soll
     # -> muss dem Namensschema aus dem Training entsprechen
-    start_checkpoint = "ppo_stacked_checkpoint_100000_steps"
+    start_checkpoint = "ppo_stacked_checkpoint_1850000_steps"
 
     # Schrittweite der Checkpoints in "Steps"
     STEP_INCREMENT = 100000
