@@ -146,11 +146,11 @@ if __name__ == "__main__":
             policy_kwargs=policy_kwargs,
             ent_coef=0.05,
             n_steps=512,
-            clip_range=0.4,
+            clip_range=0.2,
             batch_size=128,
             vf_coef=0.2,
             learning_rate=linear_schedule(1e-4),
-            gamma = 0.99,
+            gamma = 0.999,
         )
         reset_num_timesteps = True
 

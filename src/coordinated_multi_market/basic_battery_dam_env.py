@@ -225,7 +225,7 @@ class BasicBatteryDAM(gym.Env):
         # Additiver SoC-Penalty am Episodenende: 
         # Wenn am Tagesende noch Energie im Speicher ist, ist das "verpasster Profit" # Additive SoC penalty at the end of the episode: If there is still energy in the storage at the end of the day, it is "missed profit"
         if terminated and self._current_soc > 0.0:
-            soc_penalty_coef = 0.1  # <- Hyperparameter; z.B. ~1–5 testen # <- Hyperparameter; e.g. test ~1-5
+            soc_penalty_coef = 0.05  # <- Hyperparameter; z.B. ~1–5 testen # <- Hyperparameter; e.g. test ~1-5
             reward -= soc_penalty_coef * float(self._current_soc)
 
         # -------------------------------------------------------------
