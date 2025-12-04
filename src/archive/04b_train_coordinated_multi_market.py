@@ -150,7 +150,6 @@ if __name__ == "__main__":
             batch_size=128,
             vf_coef=0.2,
             learning_rate=linear_schedule(0.003),
-            gamma = 0.99,
         )
         reset_num_timesteps = True
 

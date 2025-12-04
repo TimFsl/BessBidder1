@@ -58,10 +58,10 @@ if __name__ == "__main__":
 
     # Start-Checkpoint, ab dem validiert werden soll
     # -> muss dem Namensschema aus dem Training entsprechen
-    start_checkpoint = "ppo_stacked_checkpoint_180000_steps"
+    start_checkpoint = "ppo_stacked_checkpoint_100000_steps"
 
     # Schrittweite der Checkpoints in "Steps"
-    STEP_INCREMENT = 10000
+    STEP_INCREMENT = 100000
 
     # ------------------------------------------------
 

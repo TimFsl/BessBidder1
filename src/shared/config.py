@@ -35,6 +35,7 @@ TEST_END   = pd.Timestamp(year=2023, month=12, day=31, tz="Europe/Berlin") + pd.
 START = TEST_START
 END   = TEST_END
 
+
 # Problematic dates that need to be removed from the data for the rolling intrinsic algorithm to work
 PROBLEMATIC_DATES = [
     pd.Timestamp("2020-11-15").date(),
@@ -61,8 +62,8 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 
 # 04 COORDINATED MULTI-MARKET CONFIGURATION
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 1000000
-TRAINING_STEPS_BASIC = 1000000
+TRAINING_STEPS_INTELLIGENT = 2000000
+TRAINING_STEPS_BASIC = 2000000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

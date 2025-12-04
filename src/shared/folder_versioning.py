@@ -15,7 +15,7 @@ def create_new_dir_version(dir_path):
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
     exisiting_dirs = os.listdir(dir_path)
-    exisiting_dirs = [int(x) for x in exisiting_dirs]
+    exisiting_dirs = [int(x) for x in exisiting_dirs if x.isdigit()]
     if len(exisiting_dirs) != 0:
         max_dir = max(exisiting_dirs) + 1
     else:

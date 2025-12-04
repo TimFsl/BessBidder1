@@ -196,7 +196,7 @@ class CustomPPO(PPO):
             rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
 
             # IDC starting at 200k Steps
-            if self.num_timesteps >= 1_000_000:
+            if self.num_timesteps >= 500_000:
                 if self.intraday_product_type == "H":
                     (
                         rolling_intrinsic_results_stacked,
