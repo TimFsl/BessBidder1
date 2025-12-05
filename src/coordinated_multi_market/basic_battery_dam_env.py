@@ -48,7 +48,7 @@ class BasicBatteryDAM(gym.Env):
         self._current_soc = self._start_end_soc
         self._remaining_cycles = 1
         self.action_space = spaces.Discrete(7)
-        self.observation_space = spaces.Box(-1, 1, shape=(43,), dtype=np.float32)
+        self.observation_space = spaces.Box(-1, 1, shape=(49,), dtype=np.float32)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
         self._total_profit = 0.0
@@ -93,6 +93,13 @@ class BasicBatteryDAM(gym.Env):
                 self._spread_id_full_da_std,
                 self._spread_id_full_da_min,
                 self._spread_id_full_da_max,
+                # new price features
+                self._pf_daily_min_scaled,
+                self._pf_daily_max_scaled,
+                self._pf_daily_mean_scaled,
+                self._pf_daily_spread_scaled,
+                self._pf_argmin_rel,
+                self._pf_argmax_rel,
             ),
             axis=None,
             dtype=np.float32,
@@ -429,6 +436,7 @@ class BasicBatteryDAM(gym.Env):
             self._realized_price_vector - self._min_price_realized
         ) / (self._max_price_realized - self._min_price_realized)
 
+
         # Scalar-Features (already globally scaled via MinMaxScaler from prepare_input_data)
         self._date_month = self._input_data[self._random_day]["date_month"][0]
         self._day_of_week = self._input_data[self._random_day]["day_of_week"][0]
@@ -496,6 +504,35 @@ class BasicBatteryDAM(gym.Env):
         self._delta_wind_onshore_forecast_scaled = np.append(
             np.diff(self._wind_onshore_forecast_scaled), 0
         )
+
+                # new price features
+        pf = self._forecasted_price_vector.astype(float)
+
+        self._pf_daily_min = float(np.min(pf))
+        self._pf_daily_max = float(np.max(pf))
+        self._pf_daily_spread = float(self._pf_daily_max - self._pf_daily_min)
+        self._pf_daily_mean = float(np.mean(pf))
+        self._pf_daily_std = float(np.std(pf) + 1e-6)  # +eps, damit nicht 0
+
+        argmin_hour = int(np.argmin(pf))  # 0..23
+        argmax_hour = int(np.argmax(pf))  # 0..23
+
+        # Lage von Min/Max im Tag (0..1)
+        self._pf_argmin_rel = argmin_hour / 24.0
+        self._pf_argmax_rel = argmax_hour / 24.0
+
+        P_MIN, P_MAX = -500.0, 500.0  # EPEX-Historik grob
+        SPREAD_MAX = 1000.0          # "max realistischer Spread"
+
+        def scale_price(x):
+            return 2.0 * (x - P_MIN) / (P_MAX - P_MIN) - 1.0
+
+        self._pf_daily_min_scaled = np.clip(scale_price(self._pf_daily_min), -1.0, 1.0)
+        self._pf_daily_max_scaled = np.clip(scale_price(self._pf_daily_max), -1.0, 1.0)
+        self._pf_daily_mean_scaled = np.clip(scale_price(self._pf_daily_mean), -1.0, 1.0)
+
+        spread_norm = self._pf_daily_spread / SPREAD_MAX  # 0..~1
+        self._pf_daily_spread_scaled = float(np.clip(spread_norm * 2.0 - 1.0, -1.0, 1.0))
 
 
 
