@@ -219,12 +219,12 @@ class BasicBatteryDAM(gym.Env):
         # -------------------------------------------------------------
         # 5) Terminationslogik # 5) Termination logic
         # -------------------------------------------------------------
-        game_over = round(self._remaining_cycles, 4) <= 0.0
-        terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 or game_over)
+        #game_over = round(self._remaining_cycles, 4) <= 0.0
+        terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 ) # or game_over)
 
         # Additiver SoC-Penalty am Episodenende: 
         # Wenn am Tagesende noch Energie im Speicher ist, ist das "verpasster Profit" # Additive SoC penalty at the end of the episode: If there is still energy in the storage at the end of the day, it is "missed profit"
-        if terminated and self._current_soc > 0.0:
+        if terminated and self._current_soc > 1e-3:
             soc_penalty_coef = 0.05  # <- Hyperparameter; z.B. ~1–5 testen # <- Hyperparameter; e.g. test ~1-5
             reward -= soc_penalty_coef * float(self._current_soc)
 
