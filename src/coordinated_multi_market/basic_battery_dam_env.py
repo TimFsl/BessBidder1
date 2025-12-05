@@ -28,6 +28,7 @@ class BasicBatteryDAM(gym.Env):
         capacity: np.float32 = 1.0,
         round_trip_efficiency: np.float32 = 1.0,
         start_end_soc: np.float32 = 0.0,
+        max_cycles: float = 1.0,
     ):
         self._episode_id = -1
         self._step_in_episode = 0
@@ -46,7 +47,12 @@ class BasicBatteryDAM(gym.Env):
         # TODO: implement start end restriction for the storage
         self._start_end_soc = start_end_soc
         self._current_soc = self._start_end_soc
-        self._remaining_cycles = 1
+
+        self.max_cycles = float(max_cycles)
+        self._remaining_cycles = self.max_cycles
+
+
+       #self._remaining_cycles = 1
         self.action_space = spaces.Discrete(7)
         self.observation_space = spaces.Box(-1, 1, shape=(49,), dtype=np.float32)
         self._current_time_step = 0
@@ -116,7 +122,7 @@ class BasicBatteryDAM(gym.Env):
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
         self._current_soc = self._start_end_soc
-        self._remaining_cycles = 1
+        self._remaining_cycles = float(self.max_cycles)
         self._total_profit = 0.0
         
         self._episode_id += 1
@@ -124,6 +130,17 @@ class BasicBatteryDAM(gym.Env):
 
         observation = self._get_obs()
         return observation, {}  # empty info dict
+    
+
+
+    
+    def set_max_cycles(self, value: float) -> None:
+        """
+        Setzt die maximal erlaubten Vollzyklen pro Tag (für Curriculum Learning).
+        Greift ab dem nächsten reset().
+        """
+        self.max_cycles = float(value)
+
 
     def step(
         self, action: ActType
@@ -219,15 +236,15 @@ class BasicBatteryDAM(gym.Env):
 
         # Penalty, wenn gewünschte Aktion physikalisch nicht möglich war # Penalty if desired action was physically not possible
         # overflow ist Energieüberschuss (in "Kapazitäts-Einheiten", z.B. MWh) # overflow is energy surplus (in "capacity units", e.g. MWh)
-        invalid_penalty_coef = 0.1  # <- Hyperparameter zum Tunen # <- Hyperparameter for tuning
+        invalid_penalty_coef = 0.05  # <- Hyperparameter zum Tunen # <- Hyperparameter for tuning
         if overflow > 1e-6:
             reward -= invalid_penalty_coef * overflow
 
         # -------------------------------------------------------------
         # 5) Terminationslogik # 5) Termination logic
         # -------------------------------------------------------------
-        #game_over = round(self._remaining_cycles, 4) <= 0.0
-        terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 ) # or game_over)
+        game_over = round(self._remaining_cycles, 4) <= 0.0
+        terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 or game_over)
 
         # Additiver SoC-Penalty am Episodenende: 
         # Wenn am Tagesende noch Energie im Speicher ist, ist das "verpasster Profit" # Additive SoC penalty at the end of the episode: If there is still energy in the storage at the end of the day, it is "missed profit"

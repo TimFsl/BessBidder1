@@ -35,6 +35,34 @@ class CustomPPO(PPO):
         self.lambda_val = 0.5
         self._last_ri_reward_per_euro = 0
         self.reward_log_path = reward_log_path
+    
+        # ---------------- NEU: Curriculum-Funktion ----------------
+    def _update_cycle_curriculum(self, env: VecEnv) -> None:
+        """
+        Setzt max_cycles im Env in Abhängigkeit von self.num_timesteps.
+        Wird aus collect_rollouts heraus aufgerufen.
+        """
+        steps = self.num_timesteps
+
+        # Beispiel-Schedule (anpassen nach Geschmack):
+        if steps < 300_000:
+            max_cycles = 4.0
+        elif steps < 600_000:
+            max_cycles = 3.0
+        elif steps < 900_000:
+            max_cycles = 2.0
+        else:
+            max_cycles = 1.0
+
+        # Auf alle Envs anwenden (DummyVecEnv / SubprocVecEnv)
+        try:
+            env.env_method("set_max_cycles", max_cycles)
+        except AttributeError:
+            # Falls ein Env die Methode nicht hat, einfach ignorieren
+            pass
+       
+        self.logger.record("curriculum/max_cycles", max_cycles)
+
 
     def collect_rollouts(
         self,
@@ -71,6 +99,8 @@ class CustomPPO(PPO):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
+
+        self._update_cycle_curriculum(env)
 
         while n_steps < n_rollout_steps:
             if (
