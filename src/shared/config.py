@@ -6,8 +6,8 @@ from pathlib import Path
 
 # Config file for parameters of the case study
 C_RATE = 1
-#RTE = 0.86
-RTE = 1.0
+RTE = 0.86
+#RTE = 1.0
 MAX_CYCLES_PER_YEAR = 365
 MAX_CYCLES_PER_DAY = 1
 
@@ -63,8 +63,8 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 
 # 04 COORDINATED MULTI-MARKET CONFIGURATION
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 2000000
-TRAINING_STEPS_BASIC = 2000000
+TRAINING_STEPS_INTELLIGENT = 3000000
+TRAINING_STEPS_BASIC = 3000000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

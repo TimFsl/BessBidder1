@@ -486,7 +486,7 @@ def derive_day_ahead_trades_from_drl_output(
     df["net_volume"] = [abs(x) for x in df.capacity_trade]
 
     # Profit per hour
-    df["profit"] = df.capacity_trade * df.epex_spot_60min_de_lu_eur_per_mwh
+    df["profit"] = df.capacity_trade * df.epex_spot_60min_de_lu_eur_per_mwh * efficiency
 
     # Move time from index to column
     df.reset_index(inplace=True)

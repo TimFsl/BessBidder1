@@ -36,7 +36,7 @@ class CustomPPO(PPO):
         self._last_ri_reward_per_euro = 0
         self.reward_log_path = reward_log_path
     
-        # ---------------- NEU: Curriculum-Funktion ----------------
+    # New curriculum function for max cycles
     def _update_cycle_curriculum(self, env: VecEnv) -> None:
         """
         Setzt max_cycles im Env in Abhängigkeit von self.num_timesteps.
@@ -44,7 +44,6 @@ class CustomPPO(PPO):
         """
         steps = self.num_timesteps
 
-        # Beispiel-Schedule (anpassen nach Geschmack):
         if steps < 300_000:
             max_cycles = 4.0
         elif steps < 600_000:
@@ -54,11 +53,9 @@ class CustomPPO(PPO):
         else:
             max_cycles = 1.0
 
-        # Auf alle Envs anwenden (DummyVecEnv / SubprocVecEnv)
         try:
             env.env_method("set_max_cycles", max_cycles)
         except AttributeError:
-            # Falls ein Env die Methode nicht hat, einfach ignorieren
             pass
        
         self.logger.record("curriculum/max_cycles", max_cycles)
@@ -197,7 +194,7 @@ class CustomPPO(PPO):
             ).tz_convert("Europe/Berlin")
             period_volumes = position_buffer[row_start : row_start + num_rows]
 
-            # Wenn du nur "aktive" Tage betrachten willst:
+            # Skip incomplete cycles
             if not self._check_if_complete_cycle(period_volumes):
                 continue
 
@@ -205,10 +202,10 @@ class CustomPPO(PPO):
                 row_start : row_start + num_rows
             ]
 
-            # --- DA-Teil: immer vorhanden ---
+            # DA-Rewards always needed
             da_rewards = rollout_buffer.rewards[row_start : row_start + num_rows].flatten()
 
-            # optional: DA-Profit immer berechnen (ist billig)
+            # Derive DA-Trades from the RL-Agent's actions
             da_trades = self._derive_day_ahead_trades(
                 timestamps=period_timestamps,
                 volumes=period_volumes,
@@ -226,7 +223,7 @@ class CustomPPO(PPO):
             rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
 
             # IDC starting at 200k Steps
-            if self.num_timesteps >= 2_000_000:
+            if self.num_timesteps >= 0:
                 if self.intraday_product_type == "H":
                     (
                         rolling_intrinsic_results_stacked,
@@ -245,19 +242,36 @@ class CustomPPO(PPO):
                         f"Unsupported intraday product type {self.intraday_product_type}. Only QH or H supported"
                     )
 
-                # If no trades / no profit
                 if len(rolling_intrinsic_results_stacked) > 0:
+
                     ri_stacked_profit = rolling_intrinsic_results_stacked["total_profit"].sum()
-                    ri_reward_per_scaled = ri_stacked_profit / 85 / num_rows
-                    rolling_intrinsic_rewards = np.repeat(
-                        ri_reward_per_scaled, num_rows
-                    )
+                    
+                    price_scale = max(abs(float(scaling_max_price)),
+                      abs(float(scaling_min_price)),
+                      1.0)
+                    
+                    reward_scale_idc = price_scale * 1.0
+                    ri_reward_scaled = ri_stacked_profit / reward_scale_idc
+
+                    rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
+                    rolling_intrinsic_rewards[-1] = ri_reward_scaled
+
+                else:
+                    ri_stacked_profit = 0.0
+                    rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
+                    ri_reward_scaled = 0.0
+
+
+                    
+                    # ri_reward_per_scaled = ri_stacked_profit / 85 / num_rows
+                    # rolling_intrinsic_rewards = np.repeat(ri_reward_per_scaled, num_rows)
 
                 # From here: combined_reward is actually used for PPO
+                
                 combined_rewards = (
                     self.lambda_val * da_rewards
-                    + (1 - self.lambda_val) * rolling_intrinsic_rewards
-                )
+                    + (1 - self.lambda_val) * rolling_intrinsic_rewards)
+                
 
                 rollout_buffer.rewards[row_start : row_start + num_rows] = (
                     combined_rewards.reshape(-1, 1)
@@ -281,7 +295,7 @@ class CustomPPO(PPO):
                         "idc_reward_sum": [rolling_intrinsic_rewards.sum()],
                         "combined_reward_sum": [combined_rewards.sum()],
                         "da_reward_mean": [da_rewards.mean()],
-                        "idc_reward_step": [ri_reward_per_scaled],
+                        "idc_reward_step": [ri_reward_scaled],
                         "combined_reward_mean": [combined_rewards.mean()],
                     }
                 )
@@ -298,7 +312,7 @@ class CustomPPO(PPO):
             self.logger.record("reward_components/da_profit_eur", da_profit)
             self.logger.record("reward_components/idc_profit_eur", ri_stacked_profit)
             self.logger.record("reward_components/da_reward_mean", da_rewards.mean())
-            self.logger.record("reward_components/idc_reward_step", ri_reward_per_scaled)
+            self.logger.record("reward_components/idc_reward_step", ri_reward_scaled)
             self.logger.record(
                 "reward_components/combined_reward_mean", combined_rewards.mean()
             )
