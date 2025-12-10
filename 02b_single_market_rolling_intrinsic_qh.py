@@ -9,8 +9,8 @@ from src.shared.config import (
     MAX_CYCLES_PER_YEAR,
     MIN_TRADES,
     RTE,
-    START,
-    END,
+    VAL_START,
+    VAL_END,
 )
 #from src.single_market.rolling_intrinsic_new import simulate_period
 #from src.single_market.rolling_intrinsic_new_copy import simulate_period
@@ -23,8 +23,8 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 if __name__ == "__main__":
 
     simulate_period(
-        START,
-        END,
+        VAL_START,
+        VAL_END,
         discount_rate=0,
         bucket_size=BUCKET_SIZE,
         c_rate=C_RATE,

@@ -464,7 +464,7 @@ class CustomPPO(PPO):
 
     @staticmethod
     def _check_if_complete_cycle(period_volumes, capacity: float = 1.0,
-                             min_cycle_fraction: float = 1.0):
+                             min_cycle_fraction: float = 0.0):
         traded_volume = abs(period_volumes).sum()
         cycle_fraction = traded_volume / (2 * capacity)
         return cycle_fraction >= min_cycle_fraction
