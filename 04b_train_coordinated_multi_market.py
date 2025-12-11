@@ -97,7 +97,7 @@ if __name__ == "__main__":
         round_trip_efficiency=RTE,
     )
 
-    # Validate custom environment (optional)
+    # Validate environment
     check_env(env)
     env = Monitor(env)
     env = DummyVecEnv([lambda: env])
@@ -118,7 +118,6 @@ if __name__ == "__main__":
     )
 
     if RESUME_TRAINING:
-        # -> entspricht dem, was du im Testscript machst, nur für Training
         load_path = os.path.join(
             versioned_model_path,
             MODEL_CHECKPOINT + ".zip",
@@ -126,10 +125,8 @@ if __name__ == "__main__":
         print(f"Resuming training from: {load_path}")
 
         model = CustomPPO.load(load_path, device=device)
-        # Wichtig: neues Env anhängen (du hast weiter oben ein frisches env gebaut)
         model.set_env(env)
 
-        # Bei weiterem Training: Schrittzähler nicht zurücksetzen
         reset_num_timesteps = False
     else:
         print("Starting training from scratch.")

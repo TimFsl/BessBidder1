@@ -159,17 +159,15 @@ class BasicBatteryDAM(gym.Env):
         soc_before = float(self._current_soc)
         remaining_cycles_before = float(self._remaining_cycles)
 
-        # -------------------------------------------------------------
-        # 1) Physikalisch mögliche Menge + Overflow (für Penalty)
+        
         # Physically feasible quantity to charge/discharge
-        # -------------------------------------------------------------
-        overflow = 0.0  # wie viel der Agent "zu viel" wollte # agent wanted "too much"
+        overflow = 0.0
 
         if desired_quantity > 0.0:
             # Entladen
             max_by_soc = float(self._current_soc)
             max_by_cycles = float(2.0 * self._remaining_cycles)
-            feasible_max = max(0.0, min(max_by_soc, max_by_cycles))  # Sicherheits-clip # safety clip
+            feasible_max = max(0.0, min(max_by_soc, max_by_cycles))
 
             realized_quantity = min(desired_quantity, feasible_max)
             overflow = max(0.0, desired_quantity - feasible_max)
@@ -180,21 +178,15 @@ class BasicBatteryDAM(gym.Env):
             max_charge_by_cycles = float(2.0 * self._remaining_cycles)
             feasible_charge = max(0.0, min(max_charge_by_soc, max_charge_by_cycles))
 
-            # desired_quantity ist negativ, also Betrag vergleichen # desired_quantity is negative, so compare absolute value
             desired_charge = -desired_quantity  # > 0
             realized_charge = min(desired_charge, feasible_charge)
-            realized_quantity = -realized_charge  # wieder negative Menge (Laden) # negative amount (charging) again
+            realized_quantity = -realized_charge
 
             overflow = max(0.0, desired_charge - feasible_charge)
         else:
             realized_quantity = 0.0
             overflow = 0.0
 
-        # -------------------------------------------------------------
-        # 2) SoC-Update und Zyklenverbrauch (wie bisher) # SOC update and cycle consumption
-        # -------------------------------------------------------------
-        # Konvention: realized_quantity > 0 = Entladen (SoC sinkt) # Convention: realized_quantity > 0 = discharging (SoC decreases)
-        #             realized_quantity < 0 = Laden (SoC steigt) # realized_quantity < 0 = charging (SoC increases)
         delta_soc = -realized_quantity
         self._current_soc = float(self._current_soc + delta_soc)
 
@@ -202,30 +194,20 @@ class BasicBatteryDAM(gym.Env):
         self._remaining_cycles = float(self._remaining_cycles - delta_cycles)
         self._realized_quantity_t_minus_1 = float(realized_quantity)
 
-        # -------------------------------------------------------------
-        # 3) Profit inkl. Effizienz (elektrische Seite) # Profit including efficiency (electrical side)
-        # -------------------------------------------------------------
         if realized_quantity < 0.0:
-            # Laden: Energie in der Batterie steigt um |realized_quantity| # Charging: energy in the battery increases by |realized_quantity|
             energy_into_batt = -realized_quantity
-            # Vom Netz muss mehr Energie bezogen werden (Ladeverluste) # More energy must be drawn from the grid (charging losses)
             energy_from_grid = energy_into_batt / self._efficiency
-            profit = -clearing_price * energy_from_grid  # Kosten -> negativ # Costs -> negative
+            profit = -clearing_price * energy_from_grid
+        
         elif realized_quantity > 0.0:
-            # Entladen: Batterie verliert realized_quantity     # Discharging: battery loses realized_quantity
             energy_from_batt = realized_quantity
-            # Am Netz kommt weniger an (Entladeverluste) # Less arrives at the grid (discharging losses)
             energy_to_grid = energy_from_batt * self._efficiency
-            profit = clearing_price * energy_to_grid     # Erlös -> positiv # Revenue -> positive
+            profit = clearing_price * energy_to_grid
         else:
             profit = 0.0
 
         self._total_profit += profit
 
-        # -------------------------------------------------------------
-        # 4) Reward = skalierten Profit - Invalid-Action-Penalty # Reward = scaled profit - invalid action penalty
-        # -------------------------------------------------------------
-        # Skalierung, damit Rewards im angenehmen Bereich bleiben (~[-1, 1]) # Scaling to keep rewards in a comfortable range (~[-1, 1])
         price_scale = max(
             abs(float(self._max_price_realized)),
             abs(float(self._min_price_realized)),
@@ -234,34 +216,25 @@ class BasicBatteryDAM(gym.Env):
         reward_scale = price_scale * float(self._capacity)
         reward = profit / reward_scale
 
-        # Penalty, wenn gewünschte Aktion physikalisch nicht möglich war # Penalty if desired action was physically not possible
-        # overflow ist Energieüberschuss (in "Kapazitäts-Einheiten", z.B. MWh) # overflow is energy surplus (in "capacity units", e.g. MWh)
-        invalid_penalty_coef = 0.05  # <- Hyperparameter zum Tunen # <- Hyperparameter for tuning
+        invalid_penalty_coef = 0.05
         if overflow > 1e-6:
             reward -= invalid_penalty_coef * overflow
 
-        # -------------------------------------------------------------
-        # 5) Terminationslogik # 5) Termination logic
-        # -------------------------------------------------------------
         game_over = round(self._remaining_cycles, 4) <= 0.0
         terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 or game_over)
 
-        # Additiver SoC-Penalty am Episodenende: 
-        # Wenn am Tagesende noch Energie im Speicher ist, ist das "verpasster Profit" # Additive SoC penalty at the end of the episode: If there is still energy in the storage at the end of the day, it is "missed profit"
         if terminated and self._current_soc > 1e-3:
-            soc_penalty_coef = 0.05  # <- Hyperparameter; z.B. ~1–5 testen # <- Hyperparameter; e.g. test ~1-5
+            soc_penalty_coef = 0.05
             reward -= soc_penalty_coef * float(self._current_soc)
 
-        # -------------------------------------------------------------
-        # 6) Observation, Info, Logging # 6) Observation, Info, Logging
-        # -------------------------------------------------------------
+
         timestamp = self._timestamps[timestep_in_day]
 
         info = self._get_info()
         observation = self._get_obs()
         reward = float(reward)
 
-        # Debug-Logging, das exakt dem Obs entspricht # Debug logging that exactly matches the obs
+        # Debug-Logging
         self.log_debug_step(
             episode_id=current_episode_id,
             step_in_episode=current_step_in_episode,
@@ -291,17 +264,17 @@ class BasicBatteryDAM(gym.Env):
             dam_price_forecast=self._forecasted_price_vector[timestep_in_day],
             dam_price=clearing_price,
             price_bid=np.nan,
-            capacity_bid=desired_quantity,      # was der Agent wollte # what the agent wanted
-            capacity_trade=realized_quantity,   # was wirklich passiert ist # what actually happened
+            capacity_bid=desired_quantity,
+            capacity_trade=realized_quantity,
             delta_soc=delta_soc,
             remaining_cycles=self._remaining_cycles,
             profit=profit,
         )
 
-        # Step-/Global-Counter erhöhen # Increase step/global counter
+        
         self._step_in_episode += 1
         self._global_step += 1
-        self._current_time_step += 1  # nächster Zeitschritt (wird bei reset() wieder genullt) # next time step (reset() resets it again)
+        self._current_time_step += 1
 
         return observation, reward, terminated, False, info
 
@@ -325,10 +298,9 @@ class BasicBatteryDAM(gym.Env):
         realized_price: float,
         forecast_price_current: float,
     ):
-        # Pfad für Debug-CSV # Path for debug CSV #
+        # Path for debug CSV #
         path = os.path.join(self._logging_path, "debug_obs_steps.csv")
 
-        # Timestamp zu UTC + Europe/Berlin konvertieren # Convert timestamp to UTC + Europe/Berlin
         ts = pd.to_datetime(timestamp)
         if ts.tz is None:
             ts = ts.tz_localize("Europe/Berlin")
@@ -351,11 +323,9 @@ class BasicBatteryDAM(gym.Env):
             "reward": reward,
             "realized_price": realized_price,
             "forecast_price_current": forecast_price_current,
-            # komplette Observation – exakt das, was der Agent sieht # complete observation - exactly what the agent sees
             "obs_array": obs.tolist(),
         }
 
-        # Optional: Obs-Komponenten als einzelne Spalten # Optional: Obs components as individual columns
         for i, v in enumerate(obs):
             row[f"obs_{i}"] = v
 

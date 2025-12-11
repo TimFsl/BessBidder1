@@ -36,7 +36,7 @@ class CustomPPO(PPO):
         self._last_ri_reward_per_euro = 0
         self.reward_log_path = reward_log_path
     
-    # New curriculum function for max cycles
+    # Curriculum function for max cycles
     def _update_cycle_curriculum(self, env: VecEnv) -> None:
         """
         Setzt max_cycles im Env in Abhängigkeit von self.num_timesteps.
@@ -317,7 +317,7 @@ class CustomPPO(PPO):
                 "reward_components/combined_reward_mean", combined_rewards.mean()
             )
 
-            # Optional extra: episodic returns for better comparison
+            # episodic returns for better comparison
             self.logger.record(
                 "reward_components/env_ep_return", da_rewards.sum()
             )
