@@ -17,7 +17,7 @@ MIN_TRADES = 10
 
 # Data timeframe configuration (importnant for naming csv files, etc.)
 DATA_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-DATA_END   = pd.Timestamp(year=2024, month=1, day=1, tz="Europe/Berlin")  # exklusive Obergrenze
+DATA_END   = pd.Timestamp(year=2021, month=12, day=31, tz="Europe/Berlin")  # exklusive Obergrenze
 
 # Train data timeframe
 TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
@@ -32,8 +32,8 @@ TEST_START = pd.Timestamp(year=2023, month=10, day=1, tz="Europe/Berlin")
 TEST_END   = pd.Timestamp(year=2023, month=12, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # For single market day ahead optimizer, rolling intrinsic and myopic market
-START = TEST_START
-END   = TEST_END
+START = DATA_START
+END   = DATA_END
 
 # Problematic dates that need to be removed from the data for the rolling intrinsic algorithm to work
 PROBLEMATIC_DATES = [
@@ -61,8 +61,8 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 
 # 04 COORDINATED MULTI-MARKET CONFIGURATION
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 300000
-TRAINING_STEPS_BASIC = 300000
+TRAINING_STEPS_INTELLIGENT = 2000000
+TRAINING_STEPS_BASIC = 2000000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

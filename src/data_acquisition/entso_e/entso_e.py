@@ -121,6 +121,12 @@ def fill_database_with_entsoe_data(start: pd.Timestamp, end: pd.Timestamp) -> No
         try:
             exaa_15min = entsoe_hook.get_exaa_prices(current, chunk_end)
             print(f"  DA 15min rows: {len(exaa_15min)}")
+            print("60min freq:", da_auction_prices.index.to_series().diff().value_counts().head())
+            print("15min freq:", exaa_15min.index.to_series().diff().value_counts().head())
+
+            print("60min len:", len(da_auction_prices), "unique times:", da_auction_prices.index.nunique())
+            print("15min len:", len(exaa_15min), "unique times:", exaa_15min.index.nunique())
+
             if len(exaa_15min):
                 thesis_db_hook.upload_entsoe_auction_prices(df=exaa_15min)
                 print("  → inserted DA 15min")

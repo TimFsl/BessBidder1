@@ -655,7 +655,7 @@ def simulate_days_stacked_quarterhourly_products(
                 end_date=trading_end,
             )
 
-            # VWAP logging (per-bucket row) similar to old test script
+            # VWAP logging (per-bucket row)
             vwaps_for_logging = (
                 vwap.copy().rename(columns={"price": execution_time_end}).T
             )

@@ -1,3 +1,5 @@
+# training_rolling_intrinsic_qh_intelligent_stacking.py
+# training optimierer script
 import os
 import warnings
 from typing import Optional, Tuple, Dict, Any, List
@@ -11,10 +13,12 @@ from loguru import logger
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-
 # Default path for precomputed VWAP matrices
 from src.shared.config import PRECOMPUTED_VWAP_PATH
 
+# === Debug-CSV-Logging für Training ===
+ENABLE_TRAIN_CSV_LOGGING = True  # bei Bedarf einfach auf True setzen
+DEFAULT_TRAIN_OUTPUT_PATH = "./train_debug_output"
 
 
 def adjust_prices_block(
@@ -100,7 +104,9 @@ def get_net_trades(trades: pd.DataFrame, end_date: pd.Timestamp) -> pd.DataFrame
         )
 
     # Case 2: aggregate trades by product and side
-    grouped = trades.groupby(["product", "side"])["quantity"].sum().unstack(fill_value=0)
+    grouped = trades.groupby(["product", "side"])["quantity"].sum().unstack(
+        fill_value=0
+    )
 
     # Safe access for buy/sell columns
     grouped["sum_buy"] = grouped.get("buy", 0.0)
@@ -470,6 +476,8 @@ def simulate_days_stacked_quarterhourly_products(
     min_trades: int,
     vwaps_base_path: str = PRECOMPUTED_VWAP_PATH,
     drl_output: Optional[pd.DataFrame] = None,
+    log_to_csv: bool = ENABLE_TRAIN_CSV_LOGGING,
+    output_path: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Main simulation function for intraday trading on quarter-hourly products.
@@ -499,6 +507,27 @@ def simulate_days_stacked_quarterhourly_products(
         f"Min Trades: {min_trades}"
     )
     logger.info(log_message)
+
+    # === CSV-Logging Setup (analog Test-Script) ===
+    if log_to_csv:
+        if output_path is None:
+            output_path = DEFAULT_TRAIN_OUTPUT_PATH
+
+        tradepath = os.path.join(output_path, "trades")
+        vwappath = os.path.join(output_path, "vwap")
+
+        os.makedirs(output_path, exist_ok=True)
+        os.makedirs(tradepath, exist_ok=True)
+        os.makedirs(vwappath, exist_ok=True)
+
+        profitpath = os.path.join(output_path, "profit.csv")
+
+        # Profit-Historie laden/initialisieren (Struktur wie im Testscript)
+        if os.path.exists(profitpath):
+            profits = pd.read_csv(profitpath)
+        else:
+            profits = pd.DataFrame(columns=["day", "profit", "cycles"])
+    # === Ende CSV-Logging Setup ===
 
     current_day = start_day.replace(hour=0, minute=0, second=0, microsecond=0)
     logger.info(f"Current delivery day: {current_day}")
@@ -583,6 +612,42 @@ def simulate_days_stacked_quarterhourly_products(
             trading_end,
         )
 
+        # === VWAP-Logging (analog Testscript) ===
+        if log_to_csv:
+            vwaps_for_logging = (
+                vwap.copy().rename(columns={"price": execution_time_end}).T
+            )
+            vwap_filename = os.path.join(
+                vwappath, f"vwaps_{current_day.strftime('%Y-%m-%d')}.csv"
+            )
+
+            if not os.path.exists(vwap_filename):
+                vwaps_for_logging.to_csv(
+                    vwap_filename,
+                    mode="a",
+                    header=True,
+                    index=True,
+                )
+            elif os.path.exists(vwap_filename) and (
+                execution_time_start == trading_start
+            ):
+                # Erster Bucket des Tages: alte Datei löschen
+                os.remove(vwap_filename)
+                vwaps_for_logging.to_csv(
+                    vwap_filename,
+                    mode="a",
+                    header=True,
+                    index=True,
+                )
+            else:
+                vwaps_for_logging.to_csv(
+                    vwap_filename,
+                    mode="a",
+                    header=False,
+                    index=True,
+                )
+        # === Ende VWAP-Logging ===
+
         net_trades = get_net_trades(all_trades, trading_end)
 
         # If bucket has no prices at all, skip to next bucket
@@ -628,6 +693,35 @@ def simulate_days_stacked_quarterhourly_products(
         all_trades=all_trades_reporting,
         start_day=current_day,
     )
+
+    # === Trades- & Profit-CSV-Logging (analog Testscript) ===
+    if log_to_csv:
+        # Tagesprofit über alle Trades (inkl. DA – kannst du bei Bedarf ändern)
+        daily_profit = all_trades["profit"].sum()
+
+        # Im Trainingsscript aktuell keine echte Cycle-Logik vorhanden;
+        # Struktur bleibt aber kompatibel zum Testscript.
+        current_cycles = 0.0
+
+        # Trades speichern
+        trades_file = os.path.join(
+            tradepath, f"trades_{current_day.strftime('%Y-%m-%d')}.csv"
+        )
+        all_trades.to_csv(trades_file, index=False)
+
+        # Profit-Historie anhängen
+        new_row = pd.DataFrame(
+            [[current_day, daily_profit, current_cycles]],
+            columns=["day", "profit", "cycles"],
+        )
+        profits = pd.concat([profits, new_row], ignore_index=True)
+        profits.to_csv(profitpath, index=False)
+
+        logger.info(
+            f"[TRAIN CSV LOGGING] Day {current_day:%Y-%m-%d}: "
+            f"profit={daily_profit:.2f}, cycles={current_cycles:.3f}"
+        )
+    # === Ende Trades- & Profit-CSV-Logging ===
 
     return reporting
 
