@@ -101,8 +101,6 @@ vre_df = thesis_db_hook.get_forecast(
     end=end,
 )
 
-
-
 # Combine all data into one DataFrame
 data = pd.concat([da_auction_prices_60, exaa_auction_prices, demand_df, vre_df], axis=1)
 

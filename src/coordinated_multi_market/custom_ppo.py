@@ -45,10 +45,8 @@ class CustomPPO(PPO):
         steps = self.num_timesteps
 
         if steps < 300_000:
-            max_cycles = 4.0
-        elif steps < 600_000:
             max_cycles = 3.0
-        elif steps < 900_000:
+        elif steps < 600_000:
             max_cycles = 2.0
         else:
             max_cycles = 1.0
@@ -86,9 +84,9 @@ class CustomPPO(PPO):
         self.policy.set_training_mode(False)
         n_steps = 0
         rollout_buffer.reset()
-        timestamp_buffer = np.zeros(2048)
-        position_buffer = np.zeros(2048)
-        clearing_price_buffer = np.zeros(2048)
+        timestamp_buffer = np.zeros(n_rollout_steps)
+        position_buffer = np.zeros(n_rollout_steps)
+        clearing_price_buffer = np.zeros(n_rollout_steps)
         # TODO: Add revenue buffer for scaling the rewards
 
         # Sample new weights for the state dependent exploration
@@ -185,6 +183,16 @@ class CustomPPO(PPO):
             rollout_buffer.episode_starts.flatten()
         )
 
+        # Tensorbaord logging collect episodic values
+        ep_metrics = {
+            "reward_components/combined_ep_reward": [],
+            "reward_components/combined_ep_profit": [],
+            "reward_components/day_ahead_ep_reward": [],
+            "reward_components/day_ahead_ep_profit": [],
+            "reward_components/intraday_ep_reward": [],
+            "reward_components/intraday_ep_profit": [],
+        }
+
         for row_start, num_rows in complete_periods.items():
             if num_rows <= 0:
                 continue
@@ -202,7 +210,7 @@ class CustomPPO(PPO):
                 row_start : row_start + num_rows
             ]
 
-            # DA-Rewards always needed
+            # DA-Rewards
             da_rewards = rollout_buffer.rewards[row_start : row_start + num_rows].flatten()
 
             # Derive DA-Trades from the RL-Agent's actions
@@ -220,10 +228,11 @@ class CustomPPO(PPO):
             # Default-Values for IDC (before 200k or if no simulation)
             ri_stacked_profit = 0.0
             ri_reward_per_scaled = 0.0
+            ri_reward_scaled = 0.0
             rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
 
             # IDC starting at 200k Steps
-            if self.num_timesteps >= 0:
+            if self.num_timesteps >= 1_000_000:
                 if self.intraday_product_type == "H":
                     (
                         rolling_intrinsic_results_stacked,
@@ -246,12 +255,9 @@ class CustomPPO(PPO):
 
                     ri_stacked_profit = rolling_intrinsic_results_stacked["total_profit"].sum()
                     
-                    price_scale = max(abs(float(scaling_max_price)),
-                      abs(float(scaling_min_price)),
-                      1.0)
-                    
-                    reward_scale_idc = price_scale * 1.0
-                    ri_reward_scaled = ri_stacked_profit / reward_scale_idc
+                    REWARD_SCALE = 100.0
+                    ri_reward_scaled = ri_stacked_profit / REWARD_SCALE
+
 
                     rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
                     rolling_intrinsic_rewards[-1] = ri_reward_scaled
@@ -282,7 +288,7 @@ class CustomPPO(PPO):
                 # (Training remains DA-only because we do NOT overwrite the buffer)
                 combined_rewards = da_rewards.copy()
 
-            # ==== CSV-Logging (always, from Step 0) ====
+            # CSV-Logging (always, from Step 0)
             if self.reward_log_path is not None:
                 log_row = pd.DataFrame(
                     {
@@ -308,22 +314,23 @@ class CustomPPO(PPO):
                     index=False,
                 )
 
-            # ==== TensorBoard-Logging ====
-            self.logger.record("reward_components/da_profit_eur", da_profit)
-            self.logger.record("reward_components/idc_profit_eur", ri_stacked_profit)
-            self.logger.record("reward_components/da_reward_mean", da_rewards.mean())
-            self.logger.record("reward_components/idc_reward_step", ri_reward_scaled)
-            self.logger.record(
-                "reward_components/combined_reward_mean", combined_rewards.mean()
-            )
+            # TensorBoard-Logging
+            combined_ep_reward = float(np.sum(combined_rewards))
+            combined_ep_profit = float(da_profit + ri_stacked_profit)
 
-            # episodic returns for better comparison
-            self.logger.record(
-                "reward_components/env_ep_return", da_rewards.sum()
-            )
-            self.logger.record(
-                "reward_components/combined_ep_return", combined_rewards.sum()
-            )
+            day_ahead_ep_reward = float(np.sum(da_rewards))
+            day_ahead_ep_profit = float(da_profit)
+
+            intraday_ep_reward = float(np.sum(rolling_intrinsic_rewards))
+            intraday_ep_profit = float(ri_stacked_profit)
+
+            ep_metrics["reward_components/combined_ep_reward"].append(combined_ep_reward)
+            ep_metrics["reward_components/combined_ep_profit"].append(combined_ep_profit)
+            ep_metrics["reward_components/day_ahead_ep_reward"].append(day_ahead_ep_reward)
+            ep_metrics["reward_components/day_ahead_ep_profit"].append(day_ahead_ep_profit)
+            ep_metrics["reward_components/intraday_ep_reward"].append(intraday_ep_reward)
+            ep_metrics["reward_components/intraday_ep_profit"].append(intraday_ep_profit)
+
 
             # Step-Logging (per time step within the episode)
             if self.reward_log_path is not None:
@@ -348,15 +355,14 @@ class CustomPPO(PPO):
                     index=False,
                 )
 
+        # TensorBoard: Calcuate mean of all episodes in rollout
+        n_logged_eps = len(ep_metrics["reward_components/combined_ep_reward"])
+        if n_logged_eps > 0:
+            for k, vals in ep_metrics.items():
+                self.logger.record(k, float(np.mean(vals)))
 
-                # ---------------------------------------------------------------------
+            self.logger.record("reward_components/episodes_in_rollout", n_logged_eps)
 
-                rollout_buffer.rewards[row_start : row_start + num_rows] = (
-                    combined_rewards.reshape(-1, 1)
-                )
-
-                
-                
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 

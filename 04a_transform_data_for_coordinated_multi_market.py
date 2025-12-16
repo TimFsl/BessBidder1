@@ -95,6 +95,35 @@ def calculate_id_da_spread_and_stats(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def derive_daily_exaa_forecast_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Daily features derived from exaa_15min_de_lu_eur_per_mwh (hourly series here).
+    For each day, compute stats on that day's EXAA forecast curve and ffill to hourly index.
+    """
+    s = df["exaa_15min_de_lu_eur_per_mwh"].astype(float)
+
+    daily_mean = s.resample("D").mean()
+    daily_std = s.resample("D").std()
+    daily_min = s.resample("D").min()
+    daily_max = s.resample("D").max()
+    daily_spread = daily_max - daily_min
+
+    # intra-day absolute differences (ramps)
+    abs_diff = s.diff().abs()
+    daily_diff_sum = abs_diff.resample("D").sum()
+    daily_diff_max = abs_diff.resample("D").max()
+
+    df["exaa_pf_daily_mean"] = daily_mean.reindex(df.index, method="ffill")
+    df["exaa_pf_daily_std"] = daily_std.reindex(df.index, method="ffill")
+    df["exaa_pf_daily_min"] = daily_min.reindex(df.index, method="ffill")
+    df["exaa_pf_daily_max"] = daily_max.reindex(df.index, method="ffill")
+    df["exaa_pf_daily_spread"] = daily_spread.reindex(df.index, method="ffill")
+    df["exaa_pf_daily_diff_sum"] = daily_diff_sum.reindex(df.index, method="ffill")
+    df["exaa_pf_daily_diff_max"] = daily_diff_max.reindex(df.index, method="ffill")
+
+    return df
+
+
 
 def create_dataframes():
     df = pd.read_csv(
@@ -113,6 +142,7 @@ def create_dataframes():
     df = make_time_features(df)
     df = derive_daily_wind_forecast_stats(df)
     df = calculate_id_da_spread_and_stats(df)
+    df = derive_daily_exaa_forecast_stats(df)
 
     df_spot_train = df.loc[DATA_START:DATA_END][
         [
@@ -134,6 +164,14 @@ def create_dataframes():
             "spread_id_full_da_qh_std",
             "spread_id_full_da_qh_min",
             "spread_id_full_da_qh_max",
+            "exaa_pf_daily_mean",
+            "exaa_pf_daily_std",
+            "exaa_pf_daily_min",
+            "exaa_pf_daily_max",
+            "exaa_pf_daily_spread",
+            "exaa_pf_daily_diff_sum",
+            "exaa_pf_daily_diff_max",
+
         ]
     ]
 

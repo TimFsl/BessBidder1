@@ -54,7 +54,7 @@ class BasicBatteryDAM(gym.Env):
 
        #self._remaining_cycles = 1
         self.action_space = spaces.Discrete(7)
-        self.observation_space = spaces.Box(-1, 1, shape=(49,), dtype=np.float32)
+        self.observation_space = spaces.Box(-1, 1, shape=(50,), dtype=np.float32)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
         self._total_profit = 0.0
@@ -99,13 +99,14 @@ class BasicBatteryDAM(gym.Env):
                 self._spread_id_full_da_std,
                 self._spread_id_full_da_min,
                 self._spread_id_full_da_max,
-                # new price features
-                self._pf_daily_min_scaled,
-                self._pf_daily_max_scaled,
-                self._pf_daily_mean_scaled,
-                self._pf_daily_spread_scaled,
-                self._pf_argmin_rel,
-                self._pf_argmax_rel,
+                # new EXAA features
+                self._exaa_pf_daily_mean,
+                self._exaa_pf_daily_std,
+                self._exaa_pf_daily_min,
+                self._exaa_pf_daily_max,
+                self._exaa_pf_daily_spread,
+                self._exaa_pf_daily_diff_sum,
+                self._exaa_pf_daily_diff_max,
             ),
             axis=None,
             dtype=np.float32,
@@ -208,20 +209,14 @@ class BasicBatteryDAM(gym.Env):
 
         self._total_profit += profit
 
-        price_scale = max(
-            abs(float(self._max_price_realized)),
-            abs(float(self._min_price_realized)),
-            1.0,
-        )
-        reward_scale = price_scale * float(self._capacity)
-        reward = profit / reward_scale
+        reward = profit / (100.0 * float(self._capacity))
 
         invalid_penalty_coef = 0.05
         if overflow > 1e-6:
             reward -= invalid_penalty_coef * overflow
 
         game_over = round(self._remaining_cycles, 4) <= 0.0
-        terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 or game_over)
+        terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 ) #or game_over)
 
         if terminated and self._current_soc > 1e-3:
             soc_penalty_coef = 0.05
@@ -335,12 +330,6 @@ class BasicBatteryDAM(gym.Env):
         df.to_csv(path, mode="a", header=write_header, index=False)
 
 
-
-
-
-
-
-
     def _get_info(self):
         return {
             "timestamp": self._timestamps[self._current_time_step].astype("int64"),
@@ -403,67 +392,53 @@ class BasicBatteryDAM(gym.Env):
 
 
     def _reinitialize_input_data_after_reset(self) -> None:
-
         self._random_day = self._sample_random_day()
 
         self._forecasted_price_vector = self._input_data[self._random_day]["price_forecast"]
         self._realized_price_vector = self._input_data[self._random_day]["price_realized"]
 
-        self._min_price_realized = np.min(self._realized_price_vector)
-        self._max_price_realized = np.max(self._realized_price_vector)
-        self._min_price_forecasted = np.min(self._forecasted_price_vector)
-        self._max_price_forecasted = np.max(self._forecasted_price_vector)
+        self._min_price_realized = float(np.min(self._realized_price_vector))
+        self._max_price_realized = float(np.max(self._realized_price_vector))
+        self._min_price_forecasted = float(np.min(self._forecasted_price_vector))
+        self._max_price_forecasted = float(np.max(self._forecasted_price_vector))
 
-        # Daily scaling ONLY for prices (which were not globally scaled before)
-        self._forecasted_price_vector_scaled = (
-            self._forecasted_price_vector - self._min_price_forecasted
-        ) / (self._max_price_forecasted - self._min_price_forecasted)
+        # Daily scaling for forecast prices: 0..1 then map to -1..1 (Box(-1,1))
+        daily_price_spread = self._max_price_forecasted - self._min_price_forecasted
+        daily_price_spread = daily_price_spread if abs(daily_price_spread) > 1e-6 else 1.0
+        pf01 = (self._forecasted_price_vector - self._min_price_forecasted) / daily_price_spread
+        self._forecasted_price_vector_scaled = (pf01 * 2.0 - 1.0).astype(np.float32)
 
-        self._realized_price_vector_scaled = (
-            self._realized_price_vector - self._min_price_realized
-        ) / (self._max_price_realized - self._min_price_realized)
+        # Scalar features (already globally scaled via MinMaxScaler in prepare_input_data)
+        self._date_month = float(self._input_data[self._random_day]["date_month"][0])
+        self._day_of_week = float(self._input_data[self._random_day]["day_of_week"][0])
 
+        self._wind_forecast_daily_mean = float(self._input_data[self._random_day]["wind_forecast_daily_mean"][0])
+        self._wind_forecast_daily_std = float(self._input_data[self._random_day]["wind_forecast_daily_std"][0])
 
-        # Scalar-Features (already globally scaled via MinMaxScaler from prepare_input_data)
-        self._date_month = self._input_data[self._random_day]["date_month"][0]
-        self._day_of_week = self._input_data[self._random_day]["day_of_week"][0]
-        self._wind_forecast_daily_mean = self._input_data[self._random_day][
-            "wind_forecast_daily_mean"
-        ][0]
-        self._wind_forecast_daily_std = self._input_data[self._random_day][
-            "wind_forecast_daily_std"
-        ][0]
-        self._spread_id_full_da_mean = self._input_data[self._random_day][
-            "spread_id_full_da_mean"
-        ][0]
-        self._spread_id_full_da_std = self._input_data[self._random_day][
-            "spread_id_full_da_std"
-        ][0]
-        self._spread_id_full_da_min = self._input_data[self._random_day][
-            "spread_id_full_da_min"
-        ][0]
-        self._spread_id_full_da_max = self._input_data[self._random_day][
-            "spread_id_full_da_max"
-        ][0]
+        self._spread_id_full_da_mean = float(self._input_data[self._random_day]["spread_id_full_da_mean"][0])
+        self._spread_id_full_da_std = float(self._input_data[self._random_day]["spread_id_full_da_std"][0])
+        self._spread_id_full_da_min = float(self._input_data[self._random_day]["spread_id_full_da_min"][0])
+        self._spread_id_full_da_max = float(self._input_data[self._random_day]["spread_id_full_da_max"][0])
+
+        # NEW: EXAA-derived daily features (globally scaled)
+        self._exaa_pf_daily_mean = float(self._input_data[self._random_day]["exaa_pf_daily_mean"][0])
+        self._exaa_pf_daily_std = float(self._input_data[self._random_day]["exaa_pf_daily_std"][0])
+        self._exaa_pf_daily_min = float(self._input_data[self._random_day]["exaa_pf_daily_min"][0])
+        self._exaa_pf_daily_max = float(self._input_data[self._random_day]["exaa_pf_daily_max"][0])
+        self._exaa_pf_daily_spread = float(self._input_data[self._random_day]["exaa_pf_daily_spread"][0])
+        self._exaa_pf_daily_diff_sum = float(self._input_data[self._random_day]["exaa_pf_daily_diff_sum"][0])
+        self._exaa_pf_daily_diff_max = float(self._input_data[self._random_day]["exaa_pf_daily_diff_max"][0])
 
         # Timestamps
         self._timestamps = self._input_data[self._random_day]["timestamps"]
 
-        # Forecast time series (already globally scaled by the scaler!)
-        self._pv_forecast = self._input_data[self._random_day][
-            "pv_forecast_d_minus_1_1000_de_lu_mw"
-        ]
-        self._wind_onshore_forecast = self._input_data[self._random_day][
-            "wind_onshore_forecast_d_minus_1_1000_de_lu_mw"
-        ]
-        self._wind_offshore_forecast = self._input_data[self._random_day][
-            "wind_offshore_forecast_d_minus_1_1000_de_lu_mw"
-        ]
-        self._load_forecast = self._input_data[self._random_day][
-            "load_forecast_d_minus_1_1000_total_de_lu_mw"
-        ]
+        # Forecast time series (already globally scaled by scaler)
+        self._pv_forecast = self._input_data[self._random_day]["pv_forecast_d_minus_1_1000_de_lu_mw"]
+        self._wind_onshore_forecast = self._input_data[self._random_day]["wind_onshore_forecast_d_minus_1_1000_de_lu_mw"]
+        self._wind_offshore_forecast = self._input_data[self._random_day]["wind_offshore_forecast_d_minus_1_1000_de_lu_mw"]
+        self._load_forecast = self._input_data[self._random_day]["load_forecast_d_minus_1_1000_total_de_lu_mw"]
 
-        # 5) Residual Load
+        # Residual load (still on globally scaled series)
         self._residual_load_forecast = (
             self._load_forecast
             - self._pv_forecast
@@ -471,55 +446,24 @@ class BasicBatteryDAM(gym.Env):
             - self._wind_offshore_forecast
         )
 
-        # 6) already globally scaled series
+        # Use same arrays as "scaled" (because they already are)
         self._pv_forecast_scaled = self._pv_forecast
         self._wind_onshore_forecast_scaled = self._wind_onshore_forecast
         self._wind_offshore_forecast_scaled = self._wind_offshore_forecast
         self._load_forecast_scaled = self._load_forecast
         self._residual_load_forecast_scaled = self._residual_load_forecast
 
-        # 7) Daily statistics (on globally scaled series)
-        self._pv_forecast_daily_mean = np.mean(self._pv_forecast)
-        self._pv_forecast_daily_std = np.std(self._pv_forecast)
-
-        self._load_forecast_daily_mean = np.mean(self._load_forecast)
-        self._load_forecast_daily_std = np.std(self._load_forecast)
-
-        # 8) Gradients (on the "scaled" series – here identical to above)
+        # Gradients
         self._delta_load_forecast = np.append(np.diff(self._load_forecast_scaled), 0)
         self._delta_pv_forecast_scaled = np.append(np.diff(self._pv_forecast_scaled), 0)
-        self._delta_wind_onshore_forecast_scaled = np.append(
-            np.diff(self._wind_onshore_forecast_scaled), 0
-        )
+        self._delta_wind_onshore_forecast_scaled = np.append(np.diff(self._wind_onshore_forecast_scaled), 0)
 
-                # new price features
-        pf = self._forecasted_price_vector.astype(float)
 
-        self._pf_daily_min = float(np.min(pf))
-        self._pf_daily_max = float(np.max(pf))
-        self._pf_daily_spread = float(self._pf_daily_max - self._pf_daily_min)
-        self._pf_daily_mean = float(np.mean(pf))
-        self._pf_daily_std = float(np.std(pf) + 1e-6)  # +eps, damit nicht 0
+        
+        
+       
 
-        argmin_hour = int(np.argmin(pf))  # 0..23
-        argmax_hour = int(np.argmax(pf))  # 0..23
 
-        # Lage von Min/Max im Tag (0..1)
-        self._pf_argmin_rel = argmin_hour / 24.0
-        self._pf_argmax_rel = argmax_hour / 24.0
-
-        P_MIN, P_MAX = -500.0, 500.0  # EPEX-Historik grob
-        SPREAD_MAX = 1000.0          # "max realistischer Spread"
-
-        def scale_price(x):
-            return 2.0 * (x - P_MIN) / (P_MAX - P_MIN) - 1.0
-
-        self._pf_daily_min_scaled = np.clip(scale_price(self._pf_daily_min), -1.0, 1.0)
-        self._pf_daily_max_scaled = np.clip(scale_price(self._pf_daily_max), -1.0, 1.0)
-        self._pf_daily_mean_scaled = np.clip(scale_price(self._pf_daily_mean), -1.0, 1.0)
-
-        spread_norm = self._pf_daily_spread / SPREAD_MAX  # 0..~1
-        self._pf_daily_spread_scaled = float(np.clip(spread_norm * 2.0 - 1.0, -1.0, 1.0))
 
 
 

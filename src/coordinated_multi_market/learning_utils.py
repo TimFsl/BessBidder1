@@ -93,6 +93,13 @@ def prepare_input_data(
             "spread_id_full_da_qh_std",
             "spread_id_full_da_qh_min",
             "spread_id_full_da_qh_max",
+            "exaa_pf_daily_mean",
+            "exaa_pf_daily_std",
+            "exaa_pf_daily_min",
+            "exaa_pf_daily_max",
+            "exaa_pf_daily_spread",
+            "exaa_pf_daily_diff_sum",
+            "exaa_pf_daily_diff_max",
         ]
     ].copy()
 
@@ -154,6 +161,13 @@ def prepare_input_data(
                 "spread_id_full_da_qh_std",
                 "spread_id_full_da_qh_min",
                 "spread_id_full_da_qh_max",
+                "exaa_pf_daily_mean",
+                "exaa_pf_daily_std",
+                "exaa_pf_daily_min",
+                "exaa_pf_daily_max",
+                "exaa_pf_daily_spread",
+                "exaa_pf_daily_diff_sum",
+                "exaa_pf_daily_diff_max",
             ]
         ].isna().any().any() or df.loc[day.isoformat()][
             [
@@ -171,88 +185,44 @@ def prepare_input_data(
                 "spread_id_full_da_qh_std",
                 "spread_id_full_da_qh_min",
                 "spread_id_full_da_qh_max",
+                "exaa_pf_daily_mean",
+                "exaa_pf_daily_std",
+                "exaa_pf_daily_min",
+                "exaa_pf_daily_max",
+                "exaa_pf_daily_spread",
+                "exaa_pf_daily_diff_sum",
+                "exaa_pf_daily_diff_max",
             ]
         ].shape != (
             24,
-            14,
+            21,
         ):
             continue
 
         input_dict.update(
             {
                 day.isoformat(): {
-                    "price_forecast": np.array(
-                        df.loc[day.isoformat()]["exaa_15min_de_lu_eur_per_mwh"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "price_realized": np.array(
-                        df.loc[day.isoformat()]["epex_spot_60min_de_lu_eur_per_mwh"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "pv_forecast_d_minus_1_1000_de_lu_mw": np.array(
-                        df.loc[day.isoformat()]["pv_forecast_d_minus_1_1000_de_lu_mw"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "wind_onshore_forecast_d_minus_1_1000_de_lu_mw": np.array(
-                        df.loc[day.isoformat()][
-                            "wind_onshore_forecast_d_minus_1_1000_de_lu_mw"
-                        ]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "wind_offshore_forecast_d_minus_1_1000_de_lu_mw": np.array(
-                        df.loc[day.isoformat()][
-                            "wind_offshore_forecast_d_minus_1_1000_de_lu_mw"
-                        ]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "load_forecast_d_minus_1_1000_total_de_lu_mw": np.array(
-                        df.loc[day.isoformat()][
-                            "load_forecast_d_minus_1_1000_total_de_lu_mw"
-                        ]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "date_month": np.array(
-                        df.loc[day.isoformat()]["date_month"].astype(np.float32).values
-                    ),
-                    "day_of_week": np.array(
-                        df.loc[day.isoformat()]["day_of_week"].astype(np.float32).values
-                    ),
-                    "wind_forecast_daily_mean": np.array(
-                        df.loc[day.isoformat()]["wind_forecast_daily_mean"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "wind_forecast_daily_std": np.array(
-                        df.loc[day.isoformat()]["wind_forecast_daily_std"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "spread_id_full_da_mean": np.array(
-                        df.loc[day.isoformat()]["spread_id_full_da_qh_mean"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "spread_id_full_da_std": np.array(
-                        df.loc[day.isoformat()]["spread_id_full_da_qh_std"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "spread_id_full_da_min": np.array(
-                        df.loc[day.isoformat()]["spread_id_full_da_qh_min"]
-                        .astype(np.float32)
-                        .values
-                    ),
-                    "spread_id_full_da_max": np.array(
-                        df.loc[day.isoformat()]["spread_id_full_da_qh_max"]
-                        .astype(np.float32)
-                        .values
-                    ),
+                    "price_forecast": np.array(df.loc[day.isoformat()]["exaa_15min_de_lu_eur_per_mwh"].astype(np.float32).values),
+                    "price_realized": np.array(df.loc[day.isoformat()]["epex_spot_60min_de_lu_eur_per_mwh"].astype(np.float32).values),
+                    "pv_forecast_d_minus_1_1000_de_lu_mw": np.array(df.loc[day.isoformat()]["pv_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values),
+                    "wind_onshore_forecast_d_minus_1_1000_de_lu_mw": np.array(df.loc[day.isoformat()]["wind_onshore_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values),
+                    "wind_offshore_forecast_d_minus_1_1000_de_lu_mw": np.array(df.loc[day.isoformat()]["wind_offshore_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values),
+                    "load_forecast_d_minus_1_1000_total_de_lu_mw": np.array(df.loc[day.isoformat()]["load_forecast_d_minus_1_1000_total_de_lu_mw"].astype(np.float32).values),
+                    "date_month": np.array(df.loc[day.isoformat()]["date_month"].astype(np.float32).values),
+                    "day_of_week": np.array(df.loc[day.isoformat()]["day_of_week"].astype(np.float32).values),
+                    "wind_forecast_daily_mean": np.array(df.loc[day.isoformat()]["wind_forecast_daily_mean"].astype(np.float32).values),
+                    "wind_forecast_daily_std": np.array(df.loc[day.isoformat()]["wind_forecast_daily_std"].astype(np.float32).values),
+                    "spread_id_full_da_mean": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_mean"].astype(np.float32).values),
+                    "spread_id_full_da_std": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_std"].astype(np.float32).values),
+                    "spread_id_full_da_min": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_min"].astype(np.float32).values),
+                    "spread_id_full_da_max": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_max"].astype(np.float32).values),
+                    "exaa_pf_daily_mean": np.array(df.loc[day.isoformat()]["exaa_pf_daily_mean"].astype(np.float32).values),
+                    "exaa_pf_daily_std": np.array(df.loc[day.isoformat()]["exaa_pf_daily_std"].astype(np.float32).values),
+                    "exaa_pf_daily_min": np.array(df.loc[day.isoformat()]["exaa_pf_daily_min"].astype(np.float32).values),
+                    "exaa_pf_daily_max": np.array(df.loc[day.isoformat()]["exaa_pf_daily_max"].astype(np.float32).values),
+                    "exaa_pf_daily_spread": np.array(df.loc[day.isoformat()]["exaa_pf_daily_spread"].astype(np.float32).values),
+                    "exaa_pf_daily_diff_sum": np.array(df.loc[day.isoformat()]["exaa_pf_daily_diff_sum"].astype(np.float32).values),
+                    "exaa_pf_daily_diff_max": np.array(df.loc[day.isoformat()]["exaa_pf_daily_diff_max"].astype(np.float32).values),
                     "timestamps": np.array(df.loc[day.isoformat()].index.values),
                 }
             }
