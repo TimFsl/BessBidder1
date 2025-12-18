@@ -269,17 +269,11 @@ class CustomPPO(PPO):
             self.logger.record("reward_components/idc_profit_eur", ri_stacked_profit)
             self.logger.record("reward_components/da_reward_mean", da_rewards.mean())
             self.logger.record("reward_components/idc_reward_step", ri_reward_per_scaled)
-            self.logger.record(
-                "reward_components/combined_reward_mean", combined_rewards.mean()
-            )
+            self.logger.record("reward_components/combined_reward_mean", combined_rewards.mean())
 
             # Optional extra: episodic returns for better comparison
-            self.logger.record(
-                "reward_components/env_ep_return", da_rewards.sum()
-            )
-            self.logger.record(
-                "reward_components/combined_ep_return", combined_rewards.sum()
-            )
+            self.logger.record("reward_components/env_ep_return", da_rewards.sum())
+            self.logger.record("reward_components/combined_ep_return", combined_rewards.sum())
 
             # Step-Logging (per time step within the episode)
             if self.reward_log_path is not None:
@@ -311,9 +305,6 @@ class CustomPPO(PPO):
                     combined_rewards.reshape(-1, 1)
                 )
 
-                
-                
-
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.update_locals(locals())
@@ -321,6 +312,7 @@ class CustomPPO(PPO):
         callback.on_rollout_end()
 
         return True
+
 
     @staticmethod
     def run_simulations_quarterhourly_products_in_parallel(

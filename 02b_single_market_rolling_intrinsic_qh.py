@@ -4,7 +4,6 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from src.shared.config import (
-    BUCKET_SIZE,
     C_RATE,
     MAX_CYCLES_PER_YEAR,
     MIN_TRADES,
@@ -26,7 +25,6 @@ if __name__ == "__main__":
         VAL_START,
         VAL_END,
         discount_rate=0,
-        bucket_size=BUCKET_SIZE,
         c_rate=C_RATE,
         roundtrip_eff=RTE,
         max_cycles=MAX_CYCLES_PER_YEAR,

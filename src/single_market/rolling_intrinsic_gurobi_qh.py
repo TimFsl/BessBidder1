@@ -41,9 +41,9 @@ def adjust_prices_block(
     out["price"] = out["price"].round(2)
 
     # Compute time difference (in hours) between execution_time and each product
-    idx = out.index.to_numpy(dtype="datetime64[ns]")
-    exec_ts = np.datetime64(execution_time.tz_convert(None), "ns")
-    hours = (idx - exec_ts) / np.timedelta64(1, "h")  # ndarray[float]
+    idx_utc = out.index.tz_convert("UTC").to_numpy(dtype="datetime64[ns]")
+    exec_utc = np.datetime64(execution_time.tz_convert("UTC").to_datetime64())
+    hours = (idx_utc - exec_utc) / np.timedelta64(1, "h")
 
     price = out["price"].to_numpy(dtype=float)
     is_nan = np.isnan(price)
@@ -84,10 +84,14 @@ def get_net_trades(trades: pd.DataFrame, end_date: pd.Timestamp) -> pd.DataFrame
     - net_sell (max(sum_sell - sum_buy, 0))
     """
     # Full 24h quarter-hour index for the delivery day
-    start = end_date - pd.Timedelta(hours=2)
-    start = start.replace(hour=0, minute=0)
-    end = start.replace(hour=23, minute=45)
-    idx = pd.date_range(start, end, freq="15min")
+    end_date = pd.Timestamp(end_date).tz_convert("Europe/Berlin")
+    day_start = end_date.normalize() - pd.Timedelta(days=1)  # Liefertag 00:00
+    idx = pd.date_range(
+        start=day_start,
+        end=day_start + pd.Timedelta(days=1),
+        freq="15min",
+        inclusive="left",
+    )
 
     # Case 1: no trades -> all zeros
     if trades.empty:
@@ -150,6 +154,26 @@ def load_vwaps_for_day(
     return matrix
 
 
+def infer_bucket_size_minutes(vwaps_day: pd.DataFrame) -> int:
+    """
+    Infer bucket size (in minutes) from the VWAP matrix index spacing.
+    """
+    idx = vwaps_day.index.sort_values()
+    if len(idx) < 2:
+        raise ValueError("VWAP matrix has <2 rows; cannot infer bucket size.")
+
+    deltas = idx.to_series().diff().dropna()
+    # take the most frequent delta to be robust against missing buckets
+    most_common = deltas.value_counts().idxmax()
+    minutes = int(most_common.total_seconds() / 60)
+
+    if minutes <= 0:
+        raise ValueError(f"Inferred invalid bucket size: {minutes} minutes")
+
+    return minutes
+
+
+
 def get_vwap_from_precomputed(
     vwaps_day: pd.DataFrame,
     execution_time_end: pd.Timestamp,
@@ -163,14 +187,14 @@ def get_vwap_from_precomputed(
     - index: all quarter-hours of the delivery day
     - column: 'price'
     """
-    end_date = end_date.tz_convert("Europe/Berlin")
+    end_date = pd.Timestamp(end_date).tz_convert("Europe/Berlin").normalize()
 
-    start_of_day = end_date - pd.Timedelta(hours=2)
-    start_of_day = start_of_day.replace(hour=0, minute=0)
-    end_of_day = start_of_day.replace(hour=23, minute=45)
-
+    day_start = end_date
     product_index = pd.date_range(
-        start_of_day, end_of_day, freq="15min", tz="Europe/Berlin"
+        start=day_start,
+        end=day_start + pd.Timedelta(days=1),
+        freq="15min",
+        inclusive="left",
     )
 
     if execution_time_end not in vwaps_day.index:
@@ -461,7 +485,7 @@ def simulate_period(
     start_day: pd.Timestamp,
     end_day: pd.Timestamp,
     discount_rate: float,
-    bucket_size: int,
+    #bucket_size: int,
     c_rate: float,
     roundtrip_eff: float,
     max_cycles: float,
@@ -489,7 +513,7 @@ def simulate_period(
         f"Start Day: {start_day}\n"
         f"End Day: {end_day}\n"
         f"Discount Rate: {discount_rate}\n"
-        f"Bucket Size: {bucket_size}\n"
+        #f"Bucket Size: {bucket_size}\n"
         f"C Rate: {c_rate}\n"
         f"Roundtrip Efficiency: {roundtrip_eff}\n"
         f"Max Cycles: {max_cycles}\n"
@@ -498,6 +522,8 @@ def simulate_period(
     logger.info(log_message)
 
     year = start_day.year
+
+    current_day = pd.Timestamp(current_day).tz_convert("Europe/Berlin").normalize()
 
     # Output paths (same structure as legacy script)
     path = os.path.join(
@@ -508,7 +534,7 @@ def simulate_period(
         "qh",
         str(year),
         "bs"
-        + str(bucket_size)
+       # + str(bucket_size)
         + "cr"
         + str(c_rate)
         + "rto"
@@ -561,22 +587,25 @@ def simulate_period(
         logger.info(f"Trading start: {trading_start}")
         logger.info(f"Trading end:   {trading_end}")
 
-        # Battery time index (delivery quarter-hours)
-        start_of_day = trading_end - pd.Timedelta(hours=2)
-        start_of_day = start_of_day.replace(hour=0, minute=0)
-        end_of_day = start_of_day.replace(hour=23, minute=45)
-
+        # Battery time index
+        day_start = current_day
         T = list(
             pd.date_range(
-                start_of_day, end_of_day, freq="15min", tz="Europe/Berlin"
+                start=day_start,
+                end=day_start + pd.Timedelta(days=1),
+                freq="15min",
+                inclusive="left",
             )
         )
+
         m, vars_dict, netting_constr, max_cycles_constr = build_battery_model(
             T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff
         )
 
         # VWAP matrix for this day
         vwaps_day = load_vwaps_for_day(current_day, vwaps_base_path)
+
+        bucket_size = infer_bucket_size_minutes(vwaps_day)
 
         execution_time_start = trading_start
         execution_time_end = trading_start + pd.Timedelta(minutes=bucket_size)

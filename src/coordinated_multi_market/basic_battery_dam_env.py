@@ -275,6 +275,7 @@ class BasicBatteryDAM(gym.Env):
 
 
 
+
     # New logging function for debug steps
     def log_debug_step(
         self,

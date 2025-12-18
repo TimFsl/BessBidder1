@@ -31,9 +31,15 @@ from src.data_acquisition.postgres_db.postgres_db_hooks import ThesisDBHook
 
 from src.data_acquisition.epex_sftp.build_idfull import run_build_idfull_and_merge
 
-from src.shared.config import DATA_START, DATA_END, PRECOMPUTED_VWAP_PATH
 from src.data_acquisition.epex_sftp.precompute_vwaps import precompute_range
 
+from src.shared.config import (
+    DATA_START,
+    DATA_END,
+    PRECOMPUTED_VWAP_PATH,
+    BUCKET_SIZE,
+    MIN_TRADES,
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -133,13 +139,11 @@ merged_df = run_build_idfull_and_merge(
 # VWAPs are stored in PRECOMPUTED_VWAP_PATH defined in shared/config.py
 # You can adjust bucket size and min trades as needed
 # Matrices are required for Rolling Intrinsic Algortihm
-def run_vwap_precompute():
-    precompute_range(
+
+precompute_range(
         start_day=DATA_START,
         end_day=DATA_END,
-        bucket_size=15,
-        min_trades=10,
+        bucket_size=VWAP_BUCKET_SIZE,
+        min_trades=VWAP_MIN_TRADES,
         output_path=PRECOMPUTED_VWAP_PATH,
     )
-
-run_vwap_precompute()

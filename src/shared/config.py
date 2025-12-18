@@ -7,7 +7,6 @@ from pathlib import Path
 # Config file for parameters of the case study
 C_RATE = 1
 RTE = 0.86
-#RTE = 1.0
 MAX_CYCLES_PER_YEAR = 365
 MAX_CYCLES_PER_DAY = 1
 

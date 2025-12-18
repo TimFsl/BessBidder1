@@ -145,7 +145,7 @@ if __name__ == "__main__":
             n_steps=480,
             clip_range=0.2,
             batch_size=120,
-            vf_coef=0.2,
+            vf_coef=0.4,
             learning_rate=linear_schedule(1e-4),
             gamma = 0.999,
         )

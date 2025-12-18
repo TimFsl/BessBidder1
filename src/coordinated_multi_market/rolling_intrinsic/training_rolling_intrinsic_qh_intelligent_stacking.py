@@ -150,6 +150,25 @@ def load_vwaps_for_day(
     return matrix
 
 
+def infer_bucket_size_minutes(vwaps_day: pd.DataFrame) -> int:
+    """
+    Infer bucket size (in minutes) from the VWAP matrix index spacing.
+    """
+    idx = vwaps_day.index.sort_values()
+    if len(idx) < 2:
+        raise ValueError("VWAP matrix has <2 rows; cannot infer bucket size.")
+
+    deltas = idx.to_series().diff().dropna()
+    # take the most frequent delta to be robust against missing buckets
+    most_common = deltas.value_counts().idxmax()
+    minutes = int(most_common.total_seconds() / 60)
+
+    if minutes <= 0:
+        raise ValueError(f"Inferred invalid bucket size: {minutes} minutes")
+
+    return minutes
+
+
 def get_vwap_from_precomputed(
     vwaps_day: pd.DataFrame,
     execution_time_end: pd.Timestamp,
@@ -463,7 +482,7 @@ def simulate_days_stacked_quarterhourly_products(
     start_day: pd.Timestamp,
     end_day: pd.Timestamp,
     discount_rate: float,
-    bucket_size: int,
+    #bucket_size: int,
     c_rate: float,
     roundtrip_eff: float,
     max_cycles: float,
@@ -492,7 +511,7 @@ def simulate_days_stacked_quarterhourly_products(
         f"Start Day: {start_day}\n"
         f"End Day: {end_day}\n"
         f"Discount Rate: {discount_rate}\n"
-        f"Bucket Size: {bucket_size}\n"
+        #f"Bucket Size: {bucket_size}\n"
         f"C Rate: {c_rate}\n"
         f"Roundtrip Efficiency: {roundtrip_eff}\n"
         f"Max Cycles: {max_cycles}\n"
@@ -569,6 +588,8 @@ def simulate_days_stacked_quarterhourly_products(
 
     # Load precomputed VWAP matrix for the day
     vwaps_day = load_vwaps_for_day(current_day, vwaps_base_path)
+
+    bucket_size = infer_bucket_size_minutes(vwaps_day)
 
     execution_time_start = trading_start
     execution_time_end = trading_start + pd.Timedelta(minutes=bucket_size)
