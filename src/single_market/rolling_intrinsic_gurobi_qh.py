@@ -188,8 +188,7 @@ def get_vwap_from_precomputed(
     - column: 'price'
     """
     end_date = pd.Timestamp(end_date).tz_convert("Europe/Berlin").normalize()
-
-    day_start = end_date
+    day_start = end_date - pd.Timedelta(days=1)  # <- Liefertag 00:00
     product_index = pd.date_range(
         start=day_start,
         end=day_start + pd.Timedelta(days=1),
@@ -523,8 +522,6 @@ def simulate_period(
 
     year = start_day.year
 
-    current_day = pd.Timestamp(current_day).tz_convert("Europe/Berlin").normalize()
-
     # Output paths (same structure as legacy script)
     path = os.path.join(
         "output",
@@ -567,6 +564,8 @@ def simulate_period(
     else:
         current_day = start_day
         current_cycles = 0.0
+
+    current_day = pd.Timestamp(current_day).tz_convert("Europe/Berlin").normalize()
 
     net_trades = pd.DataFrame(
         columns=["sum_buy", "sum_sell", "net_buy", "net_sell", "product"]

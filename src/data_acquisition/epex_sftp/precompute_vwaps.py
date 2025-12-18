@@ -125,21 +125,10 @@ def precompute_vwaps_for_day(
     # -------------------------------------------------------------------------
     # Use UTC for flooring, then convert back to Europe/Berlin to be DST-safe
     
-    """
+    
     et_utc = df["executiontime"].dt.tz_convert("UTC")
-
-    df["bucket_end"] = et_utc.dt.floor(f"{bucket_size}min") + pd.Timedelta(
-        minutes=bucket_size
-    )
-    df["bucket_end"] = df["bucket_end"].dt.tz_convert("Europe/Berlin")
-    """
-    # new
-    df["bucket_end"] = (
-        df["executiontime"].dt.tz_convert("UTC")
-        .dt.ceil(f"{bucket_size}min")
-        .dt.tz_convert("Europe/Berlin")
-    )
-
+    df["bucket_end"] = (et_utc.dt.floor(f"{bucket_size}min") + pd.Timedelta(minutes=bucket_size)).dt.tz_convert("Europe/Berlin")
+    
     df["bucket_start"] = (
         df["executiontime"].dt.tz_convert("UTC")
         .dt.floor(f"{bucket_size}min")

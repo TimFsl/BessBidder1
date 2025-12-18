@@ -143,7 +143,7 @@ merged_df = run_build_idfull_and_merge(
 precompute_range(
         start_day=DATA_START,
         end_day=DATA_END,
-        bucket_size=VWAP_BUCKET_SIZE,
-        min_trades=VWAP_MIN_TRADES,
+        bucket_size=BUCKET_SIZE,
+        min_trades=MIN_TRADES,
         output_path=PRECOMPUTED_VWAP_PATH,
     )
