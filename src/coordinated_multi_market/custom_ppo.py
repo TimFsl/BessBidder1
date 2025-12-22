@@ -24,7 +24,7 @@ from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_q
     simulate_days_stacked_quarterhourly_products,)
 
 
-from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADES, RTE
+from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADES, RTE, START_IDC_STEPS
 
 
 class CustomPPO(PPO):
@@ -231,8 +231,8 @@ class CustomPPO(PPO):
             ri_reward_scaled = 0.0
             rolling_intrinsic_rewards = np.zeros(num_rows, dtype=float)
 
-            # IDC starting at 200k Steps
-            if self.num_timesteps >= 1_000_000:
+            # IDC starting at 1 Mio. Steps
+            if self.num_timesteps >= START_IDC_STEPS:
                 if self.intraday_product_type == "H":
                     (
                         rolling_intrinsic_results_stacked,

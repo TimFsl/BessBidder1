@@ -51,7 +51,7 @@ PROBLEMATIC_DATES = [
 
 OUTPUT_DIR_DA = os.path.join("output", "myopic_multi_market", "day_ahead_milp")
 FILENAME_DA = "11-12.2020_ACM.csv"
-DATA_PATH_DA = Path("data", "data_2019-01-01_2024-01-01_hourly.csv")
+DATA_PATH_DA = Path("data", "data_2019-01-01_2024-12-31_hourly.csv")
 
 
 # 03 MYOPIC MULTI-MARKET CONFIGURATION
@@ -64,6 +64,7 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 SEED = 42
 TRAINING_STEPS_INTELLIGENT = 2000000
 TRAINING_STEPS_BASIC = 2000000
+START_IDC_STEPS = 1_000_000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

@@ -60,13 +60,16 @@ def sftp_connect() -> Optional[paramiko.SFTPClient]:
             username=SFTP_USERNAME,
             password=SFTP_PASSWORD,
             timeout=60,
+            banner_timeout=60,
+            auth_timeout=60,
             allow_agent=False,
             look_for_keys=False,
         )
 
+        ssh.get_transport().set_keepalive(30)
         sftp = ssh.open_sftp()
         logging.debug(f"Connected to {SFTP_HOST}")
-        return sftp
+        return ssh, sftp
 
     except paramiko.AuthenticationException as e:
         logging.error("Authentication failed, please verify your credentials.")
@@ -85,34 +88,48 @@ def download_intraday_transaction_zip_archive(
     year: int = 2018,
 ) -> Path:
     """Download the ZIP file from the SFTP server."""
-    sftp = sftp_connect()
-    if sftp is None:
-        raise ConnectionError("SFTP connection failed")
+    ssh = None
+    sftp = None
+    try:
+        ssh, sftp = sftp_connect()
 
-    files = sftp.listdir(remote_path.as_posix())
-    zip_files = [
-        file
-        for file in files
-        if file.startswith(file_name_prefix)
-        and file.endswith(".zip")
-        and str(year) in file
-    ]
+        files = sftp.listdir(remote_path.as_posix())
+        zip_files = [
+            file
+            for file in files
+            if file.startswith(file_name_prefix)
+            and file.endswith(".zip")
+            and str(year) in file
+        ]
 
-    if not zip_files:
-        raise FileNotFoundError(f"No ZIP files found with prefix {file_name_prefix}.")
+        if not zip_files:
+            raise FileNotFoundError(f"No ZIP files found with prefix {file_name_prefix}.")
 
-    zip_file_name = sorted(zip_files)[-1]
+        zip_file_name = sorted(zip_files)[-1]
 
-    remote_file_path = PurePosixPath(remote_path, zip_file_name)
-    local_file_path = Path(local_path, zip_file_name)
+        remote_file_path = PurePosixPath(remote_path, zip_file_name)
+        local_file_path = Path(local_path, zip_file_name)
 
-    sftp.get(remote_file_path.as_posix(), local_file_path)
-    # with sftp.file(remote_file_path.as_posix(), 'rb') as remote_file:
-    # with open(local_file_path.as_posix(), 'wb') as local_file:
-    #     local_file.write(remote_file.read())
+        logging.info(f"[{year}] Downloading {remote_file_path} -> {local_file_path}")
 
-    sftp.close()
-    return local_file_path
+        # Try to download the file with prefetch disabled
+        sftp.get(remote_file_path.as_posix(), local_file_path.as_posix(), prefetch=False)
+
+        return local_file_path
+
+    except Exception as e:
+        logging.exception(f"[{year}] Download failed: {e}")
+        raise
+
+    finally:
+        # Close up, regardless of success or failure
+        try:
+            if sftp is not None:
+                sftp.close()
+        finally:
+            if ssh is not None:
+                ssh.close()
+
 
 
 def unpack_archive(path: Path) -> Path:
