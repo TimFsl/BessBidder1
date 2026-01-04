@@ -173,5 +173,11 @@ output/*
 # prelimenary exclude all csv files
 *.csv
 
+# exclude private analysis modules
+coordinated_market_upper_bound_analysis/
+extending_obs_space_analysis/
+
+
+
 # End of https://www.gitignore.io/api/macos,linux,django,python,pycharm
 
