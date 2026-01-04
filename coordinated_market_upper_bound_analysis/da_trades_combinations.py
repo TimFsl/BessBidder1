@@ -19,6 +19,9 @@ def generate_da_combinations() -> List[DACombo]:
     combos: List[DACombo] = []
     cid = 0
 
+    combos.append(DACombo(combo_id=0, kind="no_da"))
+    cid = 1
+
     # buy only (1..23)
     for b in range(1, 24):
         combos.append(DACombo(cid, "buy_only", buy_hour=b))
@@ -30,7 +33,7 @@ def generate_da_combinations() -> List[DACombo]:
             combos.append(DACombo(cid, "buy_sell", buy_hour=b, sell_hour=s))
             cid += 1
 
-    assert cid == 299, f"Expected 299, got {cid}"
+    assert cid == 300, f"Expected 300, got {cid}"
     return combos
 
 

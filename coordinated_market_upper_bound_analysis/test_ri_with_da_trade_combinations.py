@@ -71,18 +71,30 @@ def run_ri_with_synthetic_da_trades(
             T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff
         )
 
-        # Hier: cycles-Logik erstmal wie bei dir "pro Tag erlaubt"
-        # Für Oracle würde ich (später) eher daily-reset machen, aber lassen wir erstmal.
         allowed_cycles = 1.0
 
-        # Pro Combo laufen lassen (hier erstmal nur profit berechnen)
         day_results = []
         for combo in combos:
             all_trades = pd.DataFrame(columns=["execution_time","side","quantity","price","product","profit"])
 
-            synthetic_output = create_synthetic_drl_output_for_combinations(drl_output, current_day, combo, volume_mwh=volume_mwh, roundtrip_eff=roundtrip_eff)
-            da_trades = derive_day_ahead_trades_from_drl_output(synthetic_output, current_day)
-            all_trades = pd.concat([all_trades, da_trades], ignore_index=True)
+            # Baseline: keine DA Trades
+            if combo.kind != "no_da":
+                synthetic_output = create_synthetic_drl_output_for_combinations(
+                    drl_output,
+                    current_day,
+                    combo,
+                    volume_mwh=volume_mwh,
+                    roundtrip_eff=roundtrip_eff,
+                )
+                da_trades = derive_day_ahead_trades_from_drl_output(synthetic_output, current_day)
+                all_trades = pd.concat([all_trades, da_trades], ignore_index=True)
+
+            # ROBUST: Modell pro Combo neu bauen
+            m, vars_dict, netting_constr, max_cycles_constr = build_battery_model(
+                T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff
+            )
+
+            allowed_cycles = 1.0  # oder 1.0 wenn du 1 cycle/day willst
 
             execution_time_start = trading_start
             execution_time_end = trading_start + pd.Timedelta(minutes=bucket_size)
@@ -114,24 +126,24 @@ def run_ri_with_synthetic_da_trades(
 
             daily_profit = float(all_trades["profit"].sum())
 
-            day_dir = Path(output_path) / "oracle_trades" / f"{current_day:%Y-%m-%d}"
+            # Trades speichern
+            day_dir = Path(output_path) / "trades" / f"{current_day:%Y-%m-%d}"
             day_dir.mkdir(parents=True, exist_ok=True)
-
             trades_file = day_dir / f"trades_combo_{combo.combo_id:03d}.csv"
             all_trades.to_csv(trades_file, index=False)
 
-
+            # Summary-Zeile
             day_results.append({
-                "day": current_day.strftime("%Y-%m-%d"),
+                "day": current_day,
                 "combo_id": combo.combo_id,
                 "kind": combo.kind,
-                "buy_hour": combo.buy_hour,
-                "sell_hour": combo.sell_hour,
+                "buy_hour": getattr(combo, "buy_hour", None),
+                "sell_hour": getattr(combo, "sell_hour", None),
                 "profit": daily_profit,
             })
 
         pd.DataFrame(day_results).to_csv(
-            os.path.join(output_path, f"oracle_summary_{current_day:%Y-%m-%d}.csv"),
+            os.path.join(output_path, f"summary_{current_day:%Y-%m-%d}.csv"),
             index=False,
         )
 
@@ -141,8 +153,8 @@ if __name__ == "__main__":
     run_ri_with_synthetic_da_trades(
         da_prices_path="data/data_2019-01-01_2024-12-31_hourly.csv",
         output_path="coordinated_market_upper_bound_analysis/results/",
-        start_day=pd.Timestamp("2020-11-01", tz="Europe/Berlin"),
-        end_day=pd.Timestamp("2020-12-31", tz="Europe/Berlin"),
+        start_day=pd.Timestamp("2019-11-30", tz="Europe/Berlin"),
+        end_day=pd.Timestamp("2020-11-01", tz="Europe/Berlin"),
         discount_rate=0.0,
         c_rate=1.0,
         roundtrip_eff=0.86,
