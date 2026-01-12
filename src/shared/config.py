@@ -21,7 +21,7 @@ DATA_END   = pd.Timestamp(year=2024, month=12, day=31, tz="Europe/Berlin")  # ex
 
 # Train data timeframe
 TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-TRAIN_END   = pd.Timestamp(year=2023, month=9, day=30, tz="Europe/Berlin") + pd.Timedelta(days=1)
+TRAIN_END   = pd.Timestamp(year=2019, month=12, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # Validation timeframe
 VAL_START = pd.Timestamp(year=2023, month=10, day=1, tz="Europe/Berlin")
@@ -64,7 +64,7 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 SEED = 42
 TRAINING_STEPS_INTELLIGENT = 2000000
 TRAINING_STEPS_BASIC = 2000000
-START_IDC_STEPS = 1_000_000
+START_IDC_STEPS = 900_000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

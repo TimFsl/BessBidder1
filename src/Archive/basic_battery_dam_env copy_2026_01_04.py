@@ -196,6 +196,21 @@ class BasicBatteryDAM(gym.Env):
         self._realized_quantity_t_minus_1 = float(realized_quantity)
 
         if realized_quantity < 0.0:
+            # Laden
+            profit = -clearing_price * (-realized_quantity) / self._efficiency
+            reward = -clearing_price * (-realized_quantity) / (100.0 * float(self._capacity))
+        elif realized_quantity > 0.0:
+            # Entladen
+            profit = clearing_price * (realized_quantity * self._efficiency)
+            reward = clearing_price * (realized_quantity) / (100.0 * float(self._capacity))
+        else:
+            profit = 0.0
+            reward = 0.0
+
+        self._total_profit += profit
+
+        """
+        if realized_quantity < 0.0:
             energy_into_batt = -realized_quantity
             energy_from_grid = energy_into_batt / self._efficiency
             profit = -clearing_price * energy_from_grid
@@ -210,6 +225,8 @@ class BasicBatteryDAM(gym.Env):
         self._total_profit += profit
 
         reward = profit / (100.0 * float(self._capacity))
+
+        """
 
         invalid_penalty_coef = 0.05
         if overflow > 1e-6:
