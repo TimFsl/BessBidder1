@@ -94,7 +94,7 @@ def run_ri_with_synthetic_da_trades(
                 T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff
             )
 
-            allowed_cycles = 1.0  # oder 1.0 wenn du 1 cycle/day willst
+            allowed_cycles = 1.0
 
             execution_time_start = trading_start
             execution_time_end = trading_start + pd.Timedelta(minutes=bucket_size)
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     run_ri_with_synthetic_da_trades(
         da_prices_path="data/data_2019-01-01_2024-12-31_hourly.csv",
         output_path="coordinated_market_upper_bound_analysis/results/",
-        start_day=pd.Timestamp("2021-03-27", tz="Europe/Berlin"),
+        start_day=pd.Timestamp("2022-12-23", tz="Europe/Berlin"),
         end_day=pd.Timestamp("2023-12-31", tz="Europe/Berlin"),
         discount_rate=0.0,
         c_rate=1.0,

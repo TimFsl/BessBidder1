@@ -529,17 +529,18 @@ def simulate_period(
         "rolling_intrinsic",
         "ri_basic",
         "qh",
-        str(year),
-        "bs"
+        f"dr{discount_rate}",
+       # str(year),
+       # "bs"
        # + str(bucket_size)
-        + "cr"
-        + str(c_rate)
-        + "rto"
-        + str(roundtrip_eff)
-        + "mc"
-        + str(max_cycles)
-        + "mt"
-        + str(min_trades),
+       # + "cr"
+       # + str(c_rate)
+       # + "rto"
+       # + str(roundtrip_eff)
+       # + "mc"
+       # + str(max_cycles)
+       # + "mt"
+       # + str(min_trades),
     )
     tradepath = os.path.join(path, "trades")
     vwappath = os.path.join(path, "vwap")

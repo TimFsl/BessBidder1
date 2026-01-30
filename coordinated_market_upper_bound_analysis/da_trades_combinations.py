@@ -15,7 +15,7 @@ class DACombo:
     buy_hour: Optional[int] = None
     sell_hour: Optional[int] = None
 
-""" 
+
 def generate_da_combinations() -> List[DACombo]:
     combos: List[DACombo] = []
     cid = 0
@@ -36,8 +36,9 @@ def generate_da_combinations() -> List[DACombo]:
 
     assert cid == 300, f"Expected 300, got {cid}"
     return combos
-"""
 
+"""
+Simplified version: only buy-only combinations + no_da
 def generate_da_combinations() -> List[DACombo]:
     combos: List[DACombo] = []
     cid = 0
@@ -52,6 +53,7 @@ def generate_da_combinations() -> List[DACombo]:
 
     assert cid == 24, f"Expected 24, got {cid}"
     return combos
+"""
 
 def create_synthetic_drl_output_for_combinations(
     da_price_frame: pd.DataFrame,

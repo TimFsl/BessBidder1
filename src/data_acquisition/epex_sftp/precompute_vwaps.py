@@ -293,7 +293,7 @@ if __name__ == "__main__":
     )
 
     precompute_range(
-        start_day=DATA_START,
+        start_day= DATA_START,
         end_day=DATA_END,
         bucket_size=BUCKET_SIZE,
         min_trades=MIN_TRADES,

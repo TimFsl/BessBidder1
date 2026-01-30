@@ -24,7 +24,7 @@ if __name__ == "__main__":
     simulate_period(
         DATA_START,
         DATA_END,
-        discount_rate=0,
+        discount_rate=0.1,
         c_rate=C_RATE,
         roundtrip_eff=RTE,
         max_cycles=MAX_CYCLES_PER_YEAR,
