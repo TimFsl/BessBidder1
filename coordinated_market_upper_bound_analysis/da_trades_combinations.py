@@ -38,7 +38,7 @@ def generate_da_combinations() -> List[DACombo]:
     return combos
 
 """
-Simplified version: only buy-only combinations + no_da
+#Simplified version: only buy-only combinations + no_da
 def generate_da_combinations() -> List[DACombo]:
     combos: List[DACombo] = []
     cid = 0
@@ -76,7 +76,7 @@ def create_synthetic_drl_output_for_combinations(
         return day_start + pd.Timedelta(hours=h - 1)
 
     def set_buy(h: int):
-        df.loc[ts_of_hour(h), "capacity_trade"] = -volume_mwh  # buy (charge)
+        df.loc[ts_of_hour(h), "capacity_trade"] = -volume_mwh #* (1/efficiency)  # buy (charge)
 
     def set_sell(h: int):
         df.loc[ts_of_hour(h), "capacity_trade"] = +volume_mwh * roundtrip_eff  # sell (discharge, losses)

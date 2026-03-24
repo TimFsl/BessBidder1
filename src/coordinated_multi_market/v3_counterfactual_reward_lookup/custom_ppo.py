@@ -1,6 +1,7 @@
+from __future__ import annotations
 
-import concurrent.futures
 import os
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import pandas as pd
@@ -13,18 +14,27 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import PPO
 
 
-from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_qh_intelligent_stacking_open_pos import (
-    simulate_days_stacked_quarterhourly_products,)
+from src.shared.config import PRECOMPUTED_DA_RI_SUMMARY_DIR, START_IDC_STEPS
 
+from .precomputed_summary_lookup import (
+    PrecomputedSummaryLookup,
+    realized_volumes_to_schedule,
+)
 
-from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADES, RTE, START_IDC_STEPS
+if TYPE_CHECKING:
+    from .basic_battery_dam_env import BasicBatteryDAM
+
+# Matches v1: total RI reward over episode = ri_eur / RI_REWARD_SCALE
+RI_REWARD_SCALE = 10.0
+# With Discrete(3): 0 = idle, 1 = full buy, 2 = full sell
+DEFAULT_IDLE_DA_ACTION = 0
 
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
 CURRICULUM_MAX_CYCLES = [
-    (300_000, 4.0),
-    (600_000, 3.0),
-    (900_000, 2.0),
+    (300_000, 3.0),
+    (600_000, 2.0),
+    (900_000, 1.0),
     (float("inf"), 1.0),
 ]
 
@@ -36,6 +46,16 @@ class CustomPPO(PPO):
         intraday_product_type: str = None,
         reward_log_path: str | None = None,
         train_log_path: str | None = None,
+        use_counterfactual_ri_reward: bool = True,
+        counterfactual_idle_action: int = DEFAULT_IDLE_DA_ACTION,
+        counterfactual_min_abs_volume: float = 1e-9,
+        max_counterfactual_steps_per_episode: Optional[int] = None,
+        counterfactual_active_mode: str = "first_buy_first_sell",
+        precomputed_summary_dir: Optional[str] = None,
+        lookup_debug_log_path: str | None = None,
+        da_market_reward_weight: float = 1.0,
+        cf_reward_weight: float = 1.0,
+        cf_only_after_steps: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -45,6 +65,65 @@ class CustomPPO(PPO):
         self._last_ri_reward_per_euro = 0
         self.reward_log_path = reward_log_path
         self.train_log_path = train_log_path
+        self.use_counterfactual_ri_reward = use_counterfactual_ri_reward
+        self.counterfactual_idle_action = int(counterfactual_idle_action)
+        self.counterfactual_min_abs_volume = float(counterfactual_min_abs_volume)
+        self.max_counterfactual_steps_per_episode = max_counterfactual_steps_per_episode
+        self.counterfactual_active_mode = str(counterfactual_active_mode)
+        _dir = precomputed_summary_dir or PRECOMPUTED_DA_RI_SUMMARY_DIR
+        self._precomputed_lookup = PrecomputedSummaryLookup(_dir)
+        self.lookup_debug_log_path = lookup_debug_log_path
+        self.da_market_reward_weight = float(da_market_reward_weight)
+        self.cf_reward_weight = float(cf_reward_weight)
+        self.cf_only_after_steps = cf_only_after_steps
+
+    @staticmethod
+    def _unwrap_to_basic_battery_dam(env: VecEnv):
+        e = env.envs[0]
+        while hasattr(e, "env"):
+            e = e.env
+        return e
+
+    @staticmethod
+    def _replay_episode_replacing_action_at(
+        template_env: BasicBatteryDAM,
+        day: str,
+        actions: np.ndarray,
+        horizon: int,
+        replace_with_idle_at: int | None,
+        idle_action: int,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Physics replay for CF keys (same as v2)."""
+        from .basic_battery_dam_env import BasicBatteryDAM
+
+        rte = float(template_env._efficiency**2)
+        replay = BasicBatteryDAM(
+            modus=template_env._modus,
+            logging_path=template_env._logging_path,
+            input_data=template_env._input_data,
+            power=template_env._power,
+            capacity=template_env._capacity,
+            round_trip_efficiency=np.float32(rte),
+            start_end_soc=template_env._start_end_soc,
+            max_cycles=float(template_env.max_cycles),
+        )
+        replay.reset(options={"day": day})
+        volumes: list[float] = []
+        clearings: list[float] = []
+        total_da_reward = 0.0
+        for t in range(horizon):
+            a = int(np.asarray(actions[t]).item())
+            if replace_with_idle_at is not None and t == replace_with_idle_at:
+                a = idle_action
+            _obs, r, _term, _trunc, info = replay.step(a)
+            total_da_reward += float(r)
+            volumes.append(float(info["position"]))
+            clearings.append(float(info["clearing_price"]))
+        return (
+            np.asarray(volumes, dtype=np.float64),
+            np.asarray(clearings, dtype=np.float64),
+            total_da_reward,
+        )
 
     def _update_cycle_curriculum(self, env: VecEnv) -> None:
         """Set max_cycles in env from current step (0–200k: 3, 200k–400k: 2, 400k+: 1)."""
@@ -59,6 +138,24 @@ class CustomPPO(PPO):
         except AttributeError:
             pass
         self.logger.record("curriculum/max_cycles", max_cycles)
+
+    @staticmethod
+    def _counterfactual_indices_first_buy_first_sell(
+        actions_period: np.ndarray,
+    ) -> np.ndarray:
+        """
+        At most 2 counterfactuals per day: first hour with action==1 (full buy),
+        first hour with action==2 (full sell). Reduces compute vs one CF per trade.
+        """
+        a = np.asarray(actions_period).flatten().astype(np.int64, copy=False)
+        idxs: list[int] = []
+        buys = np.where(a == 1)[0]
+        if len(buys) > 0:
+            idxs.append(int(buys[0]))
+        sells = np.where(a == 2)[0]
+        if len(sells) > 0:
+            idxs.append(int(sells[0]))
+        return np.array(sorted(set(idxs)), dtype=np.int64)
 
     def collect_rollouts(
         self,
@@ -95,6 +192,8 @@ class CustomPPO(PPO):
         log_remaining_cycles_buffer = np.zeros(n_rollout_steps, dtype=np.float64)
         log_profit_buffer = np.zeros(n_rollout_steps, dtype=np.float64)
         log_soc_buffer = np.zeros(n_rollout_steps, dtype=np.float64)
+        log_da_reward_market_buffer = np.zeros(n_rollout_steps, dtype=np.float64)
+        log_invalid_penalty_buffer = np.zeros(n_rollout_steps, dtype=np.float64)
 
         # Sample new weights for the state dependent exploration
         if self.use_sde:
@@ -102,6 +201,7 @@ class CustomPPO(PPO):
 
         callback.on_rollout_start()
         self._update_cycle_curriculum(env)
+        self._precomputed_lookup.reset_miss_count()
 
         while n_steps < n_rollout_steps:
             if (
@@ -189,6 +289,10 @@ class CustomPPO(PPO):
                     log_remaining_cycles_buffer[idx] = infos[0]["log_remaining_cycles"]
                     log_profit_buffer[idx] = infos[0]["log_profit"]
                     log_soc_buffer[idx] = infos[0]["log_soc"]
+                    log_da_reward_market_buffer[idx] = infos[0]["log_da_reward_market"]
+                    log_invalid_penalty_buffer[idx] = -float(
+                        infos[0]["log_invalid_penalty"]
+                    )
 
         with th.no_grad():
             # Compute value for the last timestep
@@ -204,6 +308,8 @@ class CustomPPO(PPO):
         ep_reward_combined = []
         ep_reward_da = []
         ep_reward_advantage = []
+        # Counterfactual diagnostics (minimal)
+        cf_episodes_uniform_fallback = 0
 
         for row_start, num_rows in complete_periods.items():
             if num_rows <= 0:
@@ -218,6 +324,12 @@ class CustomPPO(PPO):
             ]
 
             da_rewards = rollout_buffer.rewards[row_start : row_start + num_rows].flatten()
+            da_market_rewards = log_da_reward_market_buffer[
+                row_start : row_start + num_rows
+            ].astype(np.float64, copy=False)
+            invalid_penalties = log_invalid_penalty_buffer[
+                row_start : row_start + num_rows
+            ].astype(np.float64, copy=False)
             da_trades = self._derive_day_ahead_trades(
                 timestamps=period_timestamps,
                 volumes=period_volumes,
@@ -227,7 +339,6 @@ class CustomPPO(PPO):
             da_profit = float(da_trades.profit.sum()) if len(da_trades) > 0 else 0.0
 
             ri_stacked_profit = 0.0
-            baseline_profit = 0.0
             combined_rewards = da_rewards.copy()
             rolling_intrinsic_rewards = np.zeros(num_rows, dtype=np.float64)
 
@@ -236,48 +347,163 @@ class CustomPPO(PPO):
                 and self._check_if_complete_cycle(period_volumes)
             )
             if run_ri:
-                if self.intraday_product_type == "H":
-                    (
-                        rolling_intrinsic_results_stacked,
-                        _,
-                    ) = self.run_simulations_hourly_products_in_parallel(
-                        period_timestamps, da_trades
+                if self.intraday_product_type != "QH":
+                    raise NotImplementedError(
+                        "v3_counterfactual_reward_lookup only supports "
+                        "intraday_product_type='QH' (precomputed summary tables)."
                     )
-                elif self.intraday_product_type == "QH":
-                    rolling_intrinsic_results_stacked = (
-                        self.run_simulations_quarterhourly_products_in_parallel(
-                            period_timestamps, da_trades
-                        )
-                    )
-                else:
-                    raise ValueError(
-                        f"Unsupported intraday product type {self.intraday_product_type}. Only QH or H supported"
-                    )
-                ri_stacked_profit = float(
-                    rolling_intrinsic_results_stacked["total_profit"].sum()
-                )
                 da_rewards = rollout_buffer.rewards[
                     row_start : row_start + num_rows
                 ].flatten()
-                # Simple joint reward: DA + equally scaled IDC profit per step
-                # DA reward ~ da_profit / 100 over the episode, so use same 100-scaling for IDC
-                ri_reward_per_step = ri_stacked_profit / (10.0 * num_rows)
-                rolling_intrinsic_rewards = np.full(
-                    num_rows, ri_reward_per_step, dtype=np.float64
-                )
-                combined_rewards = da_rewards + rolling_intrinsic_rewards
-                rollout_buffer.rewards[row_start : row_start + num_rows] = (
-                    combined_rewards.reshape(-1, 1)
-                )
+                actions_period = rollout_buffer.actions[
+                    row_start : row_start + num_rows
+                ]
+                if actions_period.ndim > 1:
+                    actions_period = actions_period.flatten()
 
-            advantage_reward_per_step = rolling_intrinsic_rewards
+                day_str = str(period_timestamps[0].date().isoformat())
+                # Use realized (post-clipping) DA volumes as schedule key source.
+                # This ensures lookup is aligned with the actual schedule forwarded
+                # to intraday optimization ("capacity_trade"), not raw actions.
+                k_realized, bh_realized, sh_realized = realized_volumes_to_schedule(
+                    period_volumes
+                )
+                row_realized = self._precomputed_lookup.row_for_schedule(
+                    day_str, k_realized, bh_realized, sh_realized
+                )
+                if row_realized is None or k_realized == "invalid":
+                    self._append_lookup_debug_row(
+                        source="full_realized",
+                        day_str=day_str,
+                        kind=k_realized,
+                        buy_hour=bh_realized,
+                        sell_hour=sh_realized,
+                        replace_at=None,
+                        actions=actions_period,
+                        volumes=period_volumes,
+                    )
+                profit_full_eur = self._precomputed_lookup.profit_eur_for_key(
+                    day_str, k_realized, bh_realized, sh_realized, warn=True
+                )
+                da_profit_lookup = self._precomputed_lookup.da_profit_eur_for_key(
+                    day_str, k_realized, bh_realized, sh_realized, warn=True
+                )
+                da_profit = float(da_profit_lookup)
+                ri_stacked_profit = float(profit_full_eur - da_profit_lookup)
+
+                # Total episode return in reward units (combined € / scale)
+                R_full_total = profit_full_eur / RI_REWARD_SCALE
+
+                use_cf = self.use_counterfactual_ri_reward
+                if use_cf:
+                    base_env = self._unwrap_to_basic_battery_dam(env)
+                    rolling_intrinsic_rewards = np.zeros(num_rows, dtype=np.float64)
+                    effective_da_market_weight = self.da_market_reward_weight
+                    if (
+                        self.cf_only_after_steps is not None
+                        and self.num_timesteps >= int(self.cf_only_after_steps)
+                    ):
+                        effective_da_market_weight = 0.0
+                    base_rewards = (
+                        effective_da_market_weight * da_market_rewards
+                    ) + invalid_penalties
+                    combined_rewards = base_rewards.astype(np.float64).copy()
+
+                    if self.counterfactual_active_mode == "first_buy_first_sell":
+                        active = self._counterfactual_indices_first_buy_first_sell(
+                            actions_period
+                        )
+                    elif self.counterfactual_active_mode == "volume_nonzero":
+                        active = np.where(
+                            np.abs(period_volumes) > self.counterfactual_min_abs_volume
+                        )[0]
+                        if (
+                            self.max_counterfactual_steps_per_episode is not None
+                            and len(active) > self.max_counterfactual_steps_per_episode
+                        ):
+                            order = np.argsort(-np.abs(period_volumes[active]))
+                            active = active[
+                                order[: self.max_counterfactual_steps_per_episode]
+                            ]
+                    else:
+                        raise ValueError(
+                            "counterfactual_active_mode must be "
+                            "'first_buy_first_sell' or 'volume_nonzero', got "
+                            f"{self.counterfactual_active_mode!r}"
+                        )
+
+                    margins: list[float] = []
+                    if len(active) == 0:
+                        cf_episodes_uniform_fallback += 1
+                        # No selected CF steps => no CF shaping on this episode.
+                        # Keep intrinsic term at zero (no uniform fallback).
+                        rolling_intrinsic_rewards = np.zeros(num_rows, dtype=np.float64)
+                        combined_rewards = base_rewards.astype(np.float64).copy()
+                    else:
+                        for t in active:
+                            vol_cf, _clr_cf, _da_sum_cf = (
+                                self._replay_episode_replacing_action_at(
+                                    base_env,
+                                    day_str,
+                                    actions_period,
+                                    num_rows,
+                                    replace_with_idle_at=int(t),
+                                    idle_action=self.counterfactual_idle_action,
+                                )
+                            )
+                            k_cf, bh_cf, sh_cf = realized_volumes_to_schedule(vol_cf)
+                            row_cf = self._precomputed_lookup.row_for_schedule(
+                                day_str, k_cf, bh_cf, sh_cf
+                            )
+                            if row_cf is None or k_cf == "invalid":
+                                self._append_lookup_debug_row(
+                                    source="cf_replay",
+                                    day_str=day_str,
+                                    kind=k_cf,
+                                    buy_hour=bh_cf,
+                                    sell_hour=sh_cf,
+                                    replace_at=int(t),
+                                    actions=actions_period,
+                                    volumes=vol_cf,
+                                )
+                            profit_cf_eur = self._precomputed_lookup.profit_eur_for_key(
+                                day_str, k_cf, bh_cf, sh_cf, warn=True
+                            )
+                            R_cf_total = profit_cf_eur / RI_REWARD_SCALE
+                            margin_t = R_full_total - R_cf_total
+                            margins.append(margin_t)
+                            ti = int(t)
+                            rolling_intrinsic_rewards[ti] = margin_t
+                            combined_rewards[ti] = (
+                                float(base_rewards[ti])
+                                + self.cf_reward_weight * margin_t
+                            )
+
+                    rollout_buffer.rewards[row_start : row_start + num_rows] = (
+                        combined_rewards.reshape(-1, 1)
+                    )
+                else:
+                    ri_reward_per_step = ri_stacked_profit / (
+                        RI_REWARD_SCALE * num_rows
+                    )
+                    rolling_intrinsic_rewards = np.full(
+                        num_rows, ri_reward_per_step, dtype=np.float64
+                    )
+                    combined_rewards = da_rewards + (
+                        self.cf_reward_weight * rolling_intrinsic_rewards
+                    )
+                    rollout_buffer.rewards[row_start : row_start + num_rows] = (
+                        combined_rewards.reshape(-1, 1)
+                    )
+
+            cf_reward_per_step = rolling_intrinsic_rewards
 
             ep_profit_combined.append(float(da_profit + ri_stacked_profit))
             ep_profit_da.append(float(da_profit))
             ep_profit_idc.append(float(ri_stacked_profit))
             ep_reward_combined.append(float(np.sum(combined_rewards)))
             ep_reward_da.append(float(np.sum(da_rewards)))
-            ep_reward_advantage.append(float(np.sum(advantage_reward_per_step)))
+            ep_reward_advantage.append(float(np.sum(cf_reward_per_step)))
 
             if self.train_log_path is not None:
                 self._write_train_log_period(
@@ -298,8 +524,7 @@ class CustomPPO(PPO):
                     combined_rewards=combined_rewards,
                     da_profit=da_profit,
                     ri_stacked_profit=ri_stacked_profit,
-                    baseline_profit=baseline_profit,
-                    advantage_reward_per_step=advantage_reward_per_step,
+                    cf_reward_per_step=cf_reward_per_step,
                 )
 
         if ep_profit_combined:
@@ -318,12 +543,22 @@ class CustomPPO(PPO):
             self.logger.record(
                 "episode_reward/day_ahead_sum", float(np.mean(ep_reward_da))
             )
-            self.logger.record(
-                "episode_reward/advantage_sum", float(np.mean(ep_reward_advantage))
-            )
+            # Mean over episodes of (sum of per-step CF reward in each episode)
+            mean_cf_reward_sum = float(np.mean(ep_reward_advantage))
+            self.logger.record("episode_reward/cf_reward_sum_mean", mean_cf_reward_sum)
             self.logger.record(
                 "episode_reward/n_episodes_in_rollout", len(ep_profit_combined)
             )
+
+        # Track fallback usage only (no redundant opposite counter)
+        self.logger.record(
+            "counterfactual/episodes_uniform_ri_fallback",
+            float(cf_episodes_uniform_fallback),
+        )
+        self.logger.record(
+            "lookup/miss_count_rollout",
+            float(self._precomputed_lookup.lookup_misses),
+        )
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
@@ -333,70 +568,48 @@ class CustomPPO(PPO):
 
         return True
 
-    @staticmethod
-    def run_simulations_quarterhourly_products_in_parallel(
-        period_timestamps, da_trades
-    ):
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_stacked = executor.submit(
-                #simulate_period_quarterhourly_products,
-                simulate_days_stacked_quarterhourly_products,
-                start_day=period_timestamps[0],
-                end_day=period_timestamps[0] + pd.Timedelta(days=1),
-                #threshold=0,
-                # threshold_abs_min=0,
-                discount_rate=0,
-                #bucket_size=BUCKET_SIZE,
-                c_rate=C_RATE,
-                roundtrip_eff=RTE,
-                max_cycles=MAX_CYCLES_PER_DAY,
-                min_trades=MIN_TRADES,
-                #day_ahead_trades_drl=da_trades,
-                drl_output=da_trades
-            )
-
-
-            rolling_intrinsic_results_stacked = future_stacked.result()
-
-
-        return rolling_intrinsic_results_stacked
-
-    @staticmethod
-    def run_simulations_hourly_products_in_parallel(period_timestamps, da_trades):
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_stacked = executor.submit(
-                simulate_period_hourly_products,
-                start_day=period_timestamps[0],
-                end_day=period_timestamps[0] + pd.Timedelta(days=1),
-                threshold=0,
-                threshold_abs_min=0,
-                discount_rate=0,
-                bucket_size=BUCKET_SIZE,
-                c_rate=C_RATE,
-                roundtrip_eff=RTE,
-                max_cycles=MAX_CYCLES_PER_DAY,
-                min_trades=MIN_TRADES,
-                day_ahead_trades_drl=da_trades,
-            )
-
-            future_non_stacked = executor.submit(
-                simulate_period_hourly_products,
-                start_day=period_timestamps[0],
-                end_day=period_timestamps[0] + pd.Timedelta(days=1),
-                threshold=0,
-                threshold_abs_min=0,
-                discount_rate=0,
-                bucket_size=BUCKET_SIZE,
-                c_rate=C_RATE,
-                roundtrip_eff=RTE,
-                max_cycles=MAX_CYCLES_PER_DAY,
-                min_trades=MIN_TRADES,
-            )
-
-            rolling_intrinsic_results_stacked = future_stacked.result()
-            rolling_intrinsic_results_non_stacked = future_non_stacked.result()
-
-        return rolling_intrinsic_results_stacked, rolling_intrinsic_results_non_stacked
+    def _append_lookup_debug_row(
+        self,
+        *,
+        source: str,
+        day_str: str,
+        kind: str,
+        buy_hour: float | None,
+        sell_hour: float | None,
+        replace_at: int | None,
+        actions: np.ndarray,
+        volumes: np.ndarray,
+    ) -> None:
+        """Append one compact debug row per missing/invalid lookup key."""
+        if not self.lookup_debug_log_path:
+            return
+        a = np.asarray(actions).flatten().astype(np.int64, copy=False)
+        v = np.asarray(volumes, dtype=np.float64).ravel()
+        neg_hours = (np.where(v < -1e-9)[0] + 1).tolist()
+        pos_hours = (np.where(v > 1e-9)[0] + 1).tolist()
+        df = pd.DataFrame(
+            [
+                {
+                    "source": source,
+                    "day": day_str,
+                    "kind": kind,
+                    "buy_hour": buy_hour,
+                    "sell_hour": sell_hour,
+                    "replace_at_step": replace_at,
+                    "actions_0_23": "|".join(map(str, a.tolist())),
+                    "volumes_0_23": "|".join(f"{x:.6f}" for x in v.tolist()),
+                    "neg_hours_1_24": "|".join(map(str, neg_hours)),
+                    "pos_hours_1_24": "|".join(map(str, pos_hours)),
+                }
+            ]
+        )
+        write_header = not os.path.isfile(self.lookup_debug_log_path)
+        df.to_csv(
+            self.lookup_debug_log_path,
+            mode="a",
+            header=write_header,
+            index=False,
+        )
 
     def _write_train_log_period(
         self,
@@ -417,8 +630,7 @@ class CustomPPO(PPO):
         combined_rewards: np.ndarray,
         da_profit: float,
         ri_stacked_profit: float,
-        baseline_profit: float,
-        advantage_reward_per_step: np.ndarray,
+        cf_reward_per_step: np.ndarray,
     ) -> None:
         """Append one row per step of this period to the single train log CSV."""
         actions = rollout_buffer.actions[row_start : row_start + num_rows]
@@ -455,8 +667,7 @@ class CustomPPO(PPO):
                 "profit": profit_step,
                 "da_profit_episode": da_profit,
                 "idc_profit_episode": ri_stacked_profit,
-                "baseline_ri": baseline_profit,
-                "advantage_reward": advantage_reward_per_step,
+                "cf_reward": cf_reward_per_step,
             }
         )
         write_header = not os.path.isfile(self.train_log_path)

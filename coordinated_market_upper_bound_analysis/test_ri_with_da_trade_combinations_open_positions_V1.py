@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from coordinated_market_upper_bound_analysis.da_trades_combinations import generate_da_combinations, create_synthetic_drl_output_for_combinations
-from coordinated_market_upper_bound_analysis.testing_rolling_intrinsic_qh_intelligent_stacking_open_positions import (
+from coordinated_market_upper_bound_analysis.testing_rolling_intrinsic_qh_intelligent_stacking_open_positions_V1 import (
     derive_day_ahead_trades_from_drl_output,
     load_vwaps_for_day,
     infer_bucket_size_minutes,
@@ -78,11 +78,25 @@ def run_ri_with_synthetic_da_trades(
 
         day_results = []
         for combo in combos:
-            all_trades = pd.DataFrame(columns=["execution_time","side","quantity","price","product","profit"])
-            da_trades = pd.DataFrame(columns=["execution_time","side","quantity","price","product","profit"])
+            trade_cols = [
+                "execution_time",
+                "side",
+                "quantity",
+                "price",
+                "product",
+                "profit",
+                "free_sell",
+                "constr_sell",
+                "r_long_before",
+                "r_long_after",
+                "free_mwh",
+            ]
+            all_trades = pd.DataFrame(columns=trade_cols)
+            da_trades = pd.DataFrame(columns=trade_cols)
 
             p_da_buy: float | None = None
             r_long_remaining_mwh: float = 0.0
+            da_net_trades = get_net_trades(pd.DataFrame(columns=["product", "side", "quantity"]), trading_end)
 
             if combo.kind != "no_da":
                 synthetic_output = create_synthetic_drl_output_for_combinations(
@@ -93,6 +107,11 @@ def run_ri_with_synthetic_da_trades(
                     roundtrip_eff=roundtrip_eff,
                 )
                 da_trades = derive_day_ahead_trades_from_drl_output(synthetic_output, current_day)
+                da_trades["free_sell"] = 0.0
+                da_trades["constr_sell"] = 0.0
+                da_trades["r_long_before"] = r_long_remaining_mwh
+                da_trades["r_long_after"] = r_long_remaining_mwh
+                da_trades["free_mwh"] = 0.0
                 all_trades = pd.concat([all_trades, da_trades], ignore_index=True)
 
             # init strictly from da_trades
@@ -103,25 +122,30 @@ def run_ri_with_synthetic_da_trades(
                     p = da_buys["price"].to_numpy(dtype=float)
                     p_da_buy = float((q * p).sum() / max(1e-12, q.sum()))
 
-                da_net = get_net_trades(da_trades, trading_end)
+                da_net_trades = get_net_trades(da_trades, trading_end)
                 #da_pos_mw = (da_net["net_buy"] - da_net["net_sell"]).to_numpy(dtype=float)
                 #r_long_remaining_mwh = float(np.clip(da_pos_mw, 0.0, None).sum() / 4.0)
                 
-                buy_mwh = max(0.0, float((da_net["net_buy"]).sum() / 4.0))
-                sell_mwh = max(0.0, float((da_net["net_sell"]).sum() / 4.0))
-                r_long_remaining_mwh = max(0.0, buy_mwh * roundtrip_eff - sell_mwh)
+                #buy_mwh = max(0.0, float((da_net["net_buy"]).sum() / 4.0))
+                #sell_mwh = max(0.0, float((da_net["net_sell"]).sum() / 4.0))
+                #r_long_remaining_mwh = max(0.0, buy_mwh * roundtrip_eff - sell_mwh)
+                #r_long_remaining_mwh = max(0.0, buy_mwh * efficiency - sell_mwh/efficiency)
 
                 #r_long_remaining_mwh = max(0.0, float((da_net["net_buy"] - da_net["net_sell"]).sum() / 4.0))
 
+                buy_mwh = float(da_net_trades["net_buy"].sum()) / 4.0
+                sell_mwh = float(da_net_trades["net_sell"].sum()) / 4.0
+                r_long_remaining_mwh = max(0.0, buy_mwh * efficiency - sell_mwh/efficiency)
 
 
 
-            # ROBUST: Modell pro Combo neu bauen
-            m, vars_dict, netting_constr, max_cycles_constr, da_long_budget_constr = build_battery_model(
+
+            # Build Model
+            m, vars_dict, netting_constr, max_cycles_constr, da_long_budget_constr, free_sell_budget_constr = build_battery_model(
                 T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff
             )
 
-            allowed_cycles = 1.0  # oder 1.0 wenn du 1 cycle/day willst
+            allowed_cycles = 1.0
 
             execution_time_start = trading_start
             execution_time_end = trading_start + pd.Timedelta(minutes=bucket_size)
@@ -135,10 +159,16 @@ def run_ri_with_synthetic_da_trades(
 
                 net_trades = get_net_trades(all_trades, trading_end)
 
-                #if execution_time_start == trading_start and combo.kind != "no_da":
-                #logger.info(f"Combo {combo.combo_id:03d} | p_da_buy={p_da_buy} | tau={tau} | R_long_init={r_long_remaining_mwh:.3f} MWh")
-                #net_da = get_net_trades(da_trades, trading_end)
-                #logger.info(f"DA signed MW sum={(net_da['net_buy']-net_da['net_sell']).sum():.3f} | overlap={len(net_da.index.intersection(vwap.index))}/{len(vwap.index)}")
+
+                # only for logging calculate free_mwh
+                r_long_before = float(r_long_remaining_mwh)
+                # Tight free budget (MWh): intraday-only net-long = (ALL net) - (DA net)
+                signed_all = net_trades["net_buy"].astype(float) - net_trades["net_sell"].astype(float)
+                signed_da = da_net_trades["net_buy"].astype(float) - da_net_trades["net_sell"].astype(float)
+                signed_id = signed_all - signed_da
+                free_mwh = float(np.clip(signed_id.to_numpy(dtype=float), 0.0, None).sum() / 4.0)
+
+
 
 
                 _, trades, _, r_long_remaining_mwh = solve_bucket_with_persistent_model(
@@ -147,15 +177,22 @@ def run_ri_with_synthetic_da_trades(
                     netting_constr=netting_constr,
                     max_cycles_constr=max_cycles_constr,
                     da_long_budget_constr=da_long_budget_constr,
+                    free_sell_budget_constr=free_sell_budget_constr,
                     prices_qh=vwap,
                     execution_time=execution_time_start,
                     discount_rate=discount_rate,
                     prev_net_trades=net_trades,
+                    da_net_trades=da_net_trades,
                     allowed_cycles=allowed_cycles,
                     p_da_buy=p_da_buy,
                     tau=tau,
                     r_long_remaining_mwh=r_long_remaining_mwh,
                 )
+
+                trades["r_long_before"] = r_long_before
+                trades["r_long_after"] = r_long_remaining_mwh
+                trades["free_mwh"] = free_mwh
+
                 all_trades = pd.concat([all_trades, trades], ignore_index=True)
 
                 execution_time_start = execution_time_end
@@ -189,7 +226,7 @@ def run_ri_with_synthetic_da_trades(
 if __name__ == "__main__":
     run_ri_with_synthetic_da_trades(
         da_prices_path="data/data_2019-01-01_2024-12-31_hourly.csv",
-        output_path="coordinated_market_upper_bound_analysis/results_open_positions/",
+        output_path="coordinated_market_upper_bound_analysis/results_open_positions_V3/",
         start_day=pd.Timestamp("2019-01-01", tz="Europe/Berlin"),
         end_day=pd.Timestamp("2023-12-31", tz="Europe/Berlin"),
         discount_rate=0.0,

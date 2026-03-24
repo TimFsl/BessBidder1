@@ -20,6 +20,16 @@ from src.shared.config import (
     DA_PRICE_FORECAST_COLUMN,
 )
 
+if isinstance(DA_PRICE_FORECAST_COLUMN, tuple):
+    if len(DA_PRICE_FORECAST_COLUMN) != 1 or not isinstance(
+        DA_PRICE_FORECAST_COLUMN[0], str
+    ):
+        raise ValueError(
+            "DA_PRICE_FORECAST_COLUMN must be a string column name "
+            "(or single-item tuple due to accidental trailing comma)."
+        )
+    DA_PRICE_FORECAST_COLUMN = DA_PRICE_FORECAST_COLUMN[0]
+
 
 train_start = DATA_START.date().isoformat()
 train_end = DATA_END.date().isoformat()

@@ -24,9 +24,10 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 
-from src.coordinated_multi_market.basic_battery_dam_env import BasicBatteryDAM
-from src.coordinated_multi_market.custom_ppo import CustomPPO
-from src.coordinated_multi_market.learning_utils import (
+# Imports from this version package (not src.coordinated_multi_market top-level)
+from src.coordinated_multi_market.v1_baseline.basic_battery_dam_env import BasicBatteryDAM
+from src.coordinated_multi_market.v1_baseline.custom_ppo import CustomPPO
+from src.coordinated_multi_market.v1_baseline.learning_utils import (
     load_input_data,
     prepare_input_data,
     linear_schedule,

@@ -17,11 +17,11 @@ MIN_TRADES = 10
 
 # Data timeframe configuration (importnant for naming csv files, etc.)
 DATA_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-DATA_END   = pd.Timestamp(year=2023, month=12, day=31, tz="Europe/Berlin")
+DATA_END   = pd.Timestamp(year=2024, month=12, day=31, tz="Europe/Berlin")
 
 # Train data timeframe
 TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-TRAIN_END   = pd.Timestamp(year=2019, month=12, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
+TRAIN_END   = pd.Timestamp(year=2020, month=12, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # Validation timeframe
 VAL_START = pd.Timestamp(year=2023, month=10, day=1, tz="Europe/Berlin")
@@ -61,14 +61,21 @@ INPUT_DIR_DA = os.path.join(OUTPUT_DIR_DA, FILENAME_DA)
 LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 
 # 04 COORDINATED MULTI-MARKET CONFIGURATION
+# Column used as DA "forecast" in the env (for ablation: epex = realized, exaa = EXAA forecast)
+DA_PRICE_FORECAST_COLUMN = "exaa_15min_de_lu_eur_per_mwh", #"epex_spot_60min_de_lu_eur_per_mwh"  # or "exaa_15min_de_lu_eur_per_mwh"
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 2000000
-TRAINING_STEPS_BASIC = 2000000
+TRAINING_STEPS_INTELLIGENT = 10_000_000
+TRAINING_STEPS_BASIC = 10_000_000
 START_IDC_STEPS = 900_000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 
 PRECOMPUTED_VWAP_PATH = os.path.join( "data/precomputed_vwaps")
+
+# Precomputed DA+RI combined profit tables (v3 lookup training): summary_YYYY-MM-DD.csv
+PRECOMPUTED_DA_RI_SUMMARY_DIR = os.path.join(
+    "coordinated_market_upper_bound_analysis", "results"
+)
 
 COORDINATED_MODEL_NAME_QH = "model_intelligent_quarterhourly_products"
 TRAIN_CSV_NAME = "basic_battery_dam_train_log_v3.csv"

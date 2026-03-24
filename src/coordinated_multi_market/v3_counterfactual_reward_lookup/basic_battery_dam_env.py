@@ -52,7 +52,8 @@ class BasicBatteryDAM(gym.Env):
 
 
        #self._remaining_cycles = 1
-        self.action_space = spaces.Discrete(7)
+        # 0 = idle (0 MW), 1 = full buy/charge (-1), 2 = full sell/discharge (+1)
+        self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(-1, 1, shape=(50,), dtype=np.float32)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
@@ -118,7 +119,10 @@ class BasicBatteryDAM(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         super().reset(seed=seed, options=options)
-        self._reinitialize_input_data_after_reset()
+        day: str | None = None
+        if options is not None:
+            day = options.get("day")
+        self._reinitialize_input_data_after_reset(day=day)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
         self._current_soc = self._start_end_soc
@@ -227,9 +231,11 @@ class BasicBatteryDAM(gym.Env):
 
         """
 
-        invalid_penalty_coef = 1
+        invalid_penalty_coef = 0.1
+        invalid_penalty = 0.0
         if overflow > 1e-6:
-            reward -= invalid_penalty_coef * overflow
+            invalid_penalty = invalid_penalty_coef * overflow
+            reward -= invalid_penalty
 
         game_over = round(self._remaining_cycles, 4) <= 0.0
         terminated = bool(timestep_in_day == PERIOD_LENGTH - 1 ) #or game_over)
@@ -251,6 +257,9 @@ class BasicBatteryDAM(gym.Env):
         self._log_remaining_cycles = float(self._remaining_cycles)
         self._log_profit = profit
         self._log_soc = float(self._current_soc)
+        self._log_da_reward_market = float(reward + invalid_penalty)
+        self._log_invalid_penalty = float(invalid_penalty)
+        self._log_da_reward_total = float(reward)
 
         info = self._get_info()
         observation = self._get_obs()
@@ -280,17 +289,24 @@ class BasicBatteryDAM(gym.Env):
             info["log_remaining_cycles"] = self._log_remaining_cycles
             info["log_profit"] = self._log_profit
             info["log_soc"] = self._log_soc
+            info["log_da_reward_market"] = self._log_da_reward_market
+            info["log_invalid_penalty"] = self._log_invalid_penalty
+            info["log_da_reward_total"] = self._log_da_reward_total
         return info
 
     def close(self):
         pass
 
     def _map_discrete_action_to_continuous(self, action: int) -> float:
-        # Map discrete action index (0 to 6) to continuous value (-1.0 to 1.0)
-        if action <= 4:
-            return round(-1 + (action / 3), 2)
-        else:
-            return round((action - 3) / 3, 2)
+        """Map discrete action to desired normalized power in [-1, 1]."""
+        a = int(action)
+        if a == 0:
+            return 0.0  # idle
+        if a == 1:
+            return -1.0  # full buy (charge)
+        if a == 2:
+            return 1.0  # full sell (discharge)
+        raise ValueError(f"Invalid action {action}; expected 0, 1, or 2.")
 
     @staticmethod
     def calculate_soc_penalty(current_soc: float) -> float:
@@ -334,8 +350,21 @@ class BasicBatteryDAM(gym.Env):
 
 
 
-    def _reinitialize_input_data_after_reset(self) -> None:
-        self._random_day = self._sample_random_day()
+    def _reinitialize_input_data_after_reset(self, day: str | None = None) -> None:
+        """
+        Load one delivery day. If ``day`` is given (YYYY-MM-DD), use that key from
+        ``_input_data`` (for deterministic replay / counterfactuals). Otherwise
+        sample a random day as before.
+        """
+        if day is None:
+            self._random_day = self._sample_random_day()
+        else:
+            day_key = str(day)
+            if day_key not in self._input_data:
+                raise ValueError(
+                    f"reset(day=...): day {day_key!r} not found in input_data keys."
+                )
+            self._random_day = day_key
 
         self._forecasted_price_vector = self._input_data[self._random_day]["price_forecast"]
         self._realized_price_vector = self._input_data[self._random_day]["price_realized"]

@@ -1,6 +1,8 @@
+from __future__ import annotations
 
 import concurrent.futures
 import os
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import pandas as pd
@@ -14,17 +16,26 @@ from stable_baselines3.ppo import PPO
 
 
 from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_qh_intelligent_stacking_open_pos import (
-    simulate_days_stacked_quarterhourly_products,)
+    simulate_days_stacked_quarterhourly_products,
+)
 
 
 from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADES, RTE, START_IDC_STEPS
 
+if TYPE_CHECKING:
+    from .basic_battery_dam_env import BasicBatteryDAM
+
+# Matches v1: total RI reward over episode = ri_eur / RI_REWARD_SCALE
+RI_REWARD_SCALE = 10.0
+# With Discrete(3): 0 = idle, 1 = full buy, 2 = full sell
+DEFAULT_IDLE_DA_ACTION = 0
+
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
 CURRICULUM_MAX_CYCLES = [
-    (300_000, 4.0),
-    (600_000, 3.0),
-    (900_000, 2.0),
+    (300_000, 2.0),
+    (600_000, 1.0),
+    #(900_000, 1.0),
     (float("inf"), 1.0),
 ]
 
@@ -36,6 +47,11 @@ class CustomPPO(PPO):
         intraday_product_type: str = None,
         reward_log_path: str | None = None,
         train_log_path: str | None = None,
+        use_counterfactual_ri_reward: bool = True,
+        counterfactual_idle_action: int = DEFAULT_IDLE_DA_ACTION,
+        counterfactual_min_abs_volume: float = 1e-9,
+        max_counterfactual_steps_per_episode: Optional[int] = None,
+        counterfactual_active_mode: str = "first_buy_first_sell",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -45,6 +61,11 @@ class CustomPPO(PPO):
         self._last_ri_reward_per_euro = 0
         self.reward_log_path = reward_log_path
         self.train_log_path = train_log_path
+        self.use_counterfactual_ri_reward = use_counterfactual_ri_reward
+        self.counterfactual_idle_action = int(counterfactual_idle_action)
+        self.counterfactual_min_abs_volume = float(counterfactual_min_abs_volume)
+        self.max_counterfactual_steps_per_episode = max_counterfactual_steps_per_episode
+        self.counterfactual_active_mode = str(counterfactual_active_mode)
 
     def _update_cycle_curriculum(self, env: VecEnv) -> None:
         """Set max_cycles in env from current step (0–200k: 3, 200k–400k: 2, 400k+: 1)."""
@@ -59,6 +80,83 @@ class CustomPPO(PPO):
         except AttributeError:
             pass
         self.logger.record("curriculum/max_cycles", max_cycles)
+
+    @staticmethod
+    def _unwrap_to_basic_battery_dam(env: VecEnv):
+        """Unwrap Monitor / VecEnv to the inner ``BasicBatteryDAM``."""
+        e = env.envs[0]
+        while hasattr(e, "env"):
+            e = e.env
+        return e
+
+    @staticmethod
+    def _replay_episode_replacing_action_at(
+        template_env: BasicBatteryDAM,
+        day: str,
+        actions: np.ndarray,
+        horizon: int,
+        replace_with_idle_at: int | None,
+        idle_action: int,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """
+        Physics-consistent replay: same discrete action sequence as the rollout,
+        except at ``replace_with_idle_at`` the action is replaced by ``idle_action``
+        (default: hold / 0 MW desired quantity).
+        """
+        from .basic_battery_dam_env import BasicBatteryDAM
+
+        rte = float(template_env._efficiency**2)
+        replay = BasicBatteryDAM(
+            modus=template_env._modus,
+            logging_path=template_env._logging_path,
+            input_data=template_env._input_data,
+            power=template_env._power,
+            capacity=template_env._capacity,
+            round_trip_efficiency=np.float32(rte),
+            start_end_soc=template_env._start_end_soc,
+            max_cycles=float(template_env.max_cycles),
+        )
+        replay.reset(options={"day": day})
+        volumes: list[float] = []
+        clearings: list[float] = []
+        total_da_reward = 0.0
+        for t in range(horizon):
+            a = int(np.asarray(actions[t]).item())
+            if replace_with_idle_at is not None and t == replace_with_idle_at:
+                a = idle_action
+            _obs, r, _term, _trunc, info = replay.step(a)
+            total_da_reward += float(r)
+            volumes.append(float(info["position"]))
+            clearings.append(float(info["clearing_price"]))
+        return (
+            np.asarray(volumes, dtype=np.float64),
+            np.asarray(clearings, dtype=np.float64),
+            total_da_reward,
+        )
+
+    def _ri_total_profit_qh(self, period_timestamps, da_trades: pd.DataFrame) -> float:
+        res = self.run_simulations_quarterhourly_products_in_parallel(
+            period_timestamps, da_trades
+        )
+        return float(res["total_profit"].sum())
+
+    @staticmethod
+    def _counterfactual_indices_first_buy_first_sell(
+        actions_period: np.ndarray,
+    ) -> np.ndarray:
+        """
+        At most 2 counterfactuals per day: first hour with action==1 (full buy),
+        first hour with action==2 (full sell). Reduces compute vs one CF per trade.
+        """
+        a = np.asarray(actions_period).flatten().astype(np.int64, copy=False)
+        idxs: list[int] = []
+        buys = np.where(a == 1)[0]
+        if len(buys) > 0:
+            idxs.append(int(buys[0]))
+        sells = np.where(a == 2)[0]
+        if len(sells) > 0:
+            idxs.append(int(sells[0]))
+        return np.array(sorted(set(idxs)), dtype=np.int64)
 
     def collect_rollouts(
         self,
@@ -204,6 +302,12 @@ class CustomPPO(PPO):
         ep_reward_combined = []
         ep_reward_da = []
         ep_reward_advantage = []
+        # Counterfactual diagnostics (per completed episode in this rollout)
+        ep_cf_mean_margins: list[float] = []
+        ep_cf_sum_margins_per_episode: list[float] = []
+        ep_cf_n_active_hours: list[int] = []
+        cf_episodes_strict = 0
+        cf_episodes_uniform_fallback = 0
 
         for row_start, num_rows in complete_periods.items():
             if num_rows <= 0:
@@ -259,16 +363,109 @@ class CustomPPO(PPO):
                 da_rewards = rollout_buffer.rewards[
                     row_start : row_start + num_rows
                 ].flatten()
-                # Simple joint reward: DA + equally scaled IDC profit per step
-                # DA reward ~ da_profit / 100 over the episode, so use same 100-scaling for IDC
-                ri_reward_per_step = ri_stacked_profit / (10.0 * num_rows)
-                rolling_intrinsic_rewards = np.full(
-                    num_rows, ri_reward_per_step, dtype=np.float64
+                actions_period = rollout_buffer.actions[
+                    row_start : row_start + num_rows
+                ]
+                if actions_period.ndim > 1:
+                    actions_period = actions_period.flatten()
+
+                # Total return scaling matches v1: sum of RI-shaped reward = ri_eur / RI_REWARD_SCALE
+                ri_scaled_full = ri_stacked_profit / RI_REWARD_SCALE
+                R_full_total = float(np.sum(da_rewards)) + ri_scaled_full
+
+                use_cf = (
+                    self.use_counterfactual_ri_reward
+                    and self.intraday_product_type == "QH"
                 )
-                combined_rewards = da_rewards + rolling_intrinsic_rewards
-                rollout_buffer.rewards[row_start : row_start + num_rows] = (
-                    combined_rewards.reshape(-1, 1)
-                )
+                if use_cf:
+                    base_env = self._unwrap_to_basic_battery_dam(env)
+                    day_str = str(period_timestamps[0].date().isoformat())
+                    rolling_intrinsic_rewards = np.zeros(num_rows, dtype=np.float64)
+                    combined_rewards = da_rewards.astype(np.float64).copy()
+
+                    if self.counterfactual_active_mode == "first_buy_first_sell":
+                        active = self._counterfactual_indices_first_buy_first_sell(
+                            actions_period
+                        )
+                    elif self.counterfactual_active_mode == "volume_nonzero":
+                        active = np.where(
+                            np.abs(period_volumes) > self.counterfactual_min_abs_volume
+                        )[0]
+                        if (
+                            self.max_counterfactual_steps_per_episode is not None
+                            and len(active) > self.max_counterfactual_steps_per_episode
+                        ):
+                            order = np.argsort(-np.abs(period_volumes[active]))
+                            active = active[
+                                order[: self.max_counterfactual_steps_per_episode]
+                            ]
+                    else:
+                        raise ValueError(
+                            "counterfactual_active_mode must be "
+                            "'first_buy_first_sell' or 'volume_nonzero', got "
+                            f"{self.counterfactual_active_mode!r}"
+                        )
+
+                    margins: list[float] = []
+                    if len(active) == 0:
+                        # No realized trades: fall back to uniform RI spread (same as v1)
+                        cf_episodes_uniform_fallback += 1
+                        ri_reward_per_step = ri_stacked_profit / (
+                            RI_REWARD_SCALE * num_rows
+                        )
+                        rolling_intrinsic_rewards = np.full(
+                            num_rows, ri_reward_per_step, dtype=np.float64
+                        )
+                        combined_rewards = da_rewards + rolling_intrinsic_rewards
+                    else:
+                        cf_episodes_strict += 1
+                        for t in active:
+                            _vol_cf, _clr_cf, da_sum_cf = (
+                                self._replay_episode_replacing_action_at(
+                                    base_env,
+                                    day_str,
+                                    actions_period,
+                                    num_rows,
+                                    replace_with_idle_at=int(t),
+                                    idle_action=self.counterfactual_idle_action,
+                                )
+                            )
+                            da_trades_cf = self._derive_day_ahead_trades(
+                                timestamps=period_timestamps,
+                                volumes=_vol_cf,
+                                clearing_prices=_clr_cf,
+                                intraday_product_type=self.intraday_product_type,
+                            )
+                            ri_cf = self._ri_total_profit_qh(
+                                period_timestamps, da_trades_cf
+                            )
+                            ri_scaled_cf = ri_cf / RI_REWARD_SCALE
+                            R_cf_total = float(da_sum_cf) + ri_scaled_cf
+                            margin_t = R_full_total - R_cf_total
+                            margins.append(margin_t)
+                            ti = int(t)
+                            rolling_intrinsic_rewards[ti] = margin_t
+                            combined_rewards[ti] = float(da_rewards[ti]) + margin_t
+                        if margins:
+                            ep_cf_mean_margins.append(float(np.mean(margins)))
+                            ep_cf_sum_margins_per_episode.append(float(np.sum(margins)))
+                            ep_cf_n_active_hours.append(len(margins))
+
+                    rollout_buffer.rewards[row_start : row_start + num_rows] = (
+                        combined_rewards.reshape(-1, 1)
+                    )
+                else:
+                    # Legacy: DA + equally scaled IDC profit per step (or hourly product path)
+                    ri_reward_per_step = ri_stacked_profit / (
+                        RI_REWARD_SCALE * num_rows
+                    )
+                    rolling_intrinsic_rewards = np.full(
+                        num_rows, ri_reward_per_step, dtype=np.float64
+                    )
+                    combined_rewards = da_rewards + rolling_intrinsic_rewards
+                    rollout_buffer.rewards[row_start : row_start + num_rows] = (
+                        combined_rewards.reshape(-1, 1)
+                    )
 
             advantage_reward_per_step = rolling_intrinsic_rewards
 
@@ -318,11 +515,46 @@ class CustomPPO(PPO):
             self.logger.record(
                 "episode_reward/day_ahead_sum", float(np.mean(ep_reward_da))
             )
+            # Sum of per-step intrinsic / CF term (NOT PPO GAE advantage). CSV column "advantage_reward".
+            mean_intrinsic = float(np.mean(ep_reward_advantage))
             self.logger.record(
-                "episode_reward/advantage_sum", float(np.mean(ep_reward_advantage))
+                "episode_reward/intrinsic_step_sum_mean", mean_intrinsic
+            )
+            self.logger.record(
+                "episode_reward/advantage_sum",
+                mean_intrinsic,
             )
             self.logger.record(
                 "episode_reward/n_episodes_in_rollout", len(ep_profit_combined)
+            )
+
+        # Counterfactual-specific TensorBoard metrics (strict CF path only)
+        if cf_episodes_strict > 0 and ep_cf_mean_margins:
+            self.logger.record(
+                "counterfactual/mean_margin_within_episode",
+                float(np.mean(ep_cf_mean_margins)),
+            )
+            self.logger.record(
+                "counterfactual/sum_margins_per_episode_mean",
+                float(np.mean(ep_cf_sum_margins_per_episode)),
+            )
+            self.logger.record(
+                "counterfactual/active_hours_per_episode_mean",
+                float(np.mean(ep_cf_n_active_hours)),
+            )
+            self.logger.record(
+                "counterfactual/episodes_with_strict_cf", float(cf_episodes_strict)
+            )
+        if cf_episodes_uniform_fallback > 0:
+            self.logger.record(
+                "counterfactual/episodes_uniform_ri_fallback",
+                float(cf_episodes_uniform_fallback),
+            )
+        # Backwards-compatible alias
+        if ep_cf_mean_margins:
+            self.logger.record(
+                "episode_reward/cf_mean_margin",
+                float(np.mean(ep_cf_mean_margins)),
             )
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)

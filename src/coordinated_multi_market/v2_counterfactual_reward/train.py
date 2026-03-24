@@ -1,6 +1,9 @@
 """
 Train PPO Agent for Coordinated Multi-Market Battery Dispatch
 
+Uses Discrete(3) DA actions (idle / full buy / full sell). Old checkpoints from
+7-action training cannot be loaded on this policy.
+
 This script:
 - Loads and preprocesses spot market data.
 - Sets up a custom Stable-Baselines3 PPO environment (`BasicBatteryDAM`).
@@ -24,9 +27,12 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 
-from src.coordinated_multi_market.basic_battery_dam_env import BasicBatteryDAM
-from src.coordinated_multi_market.custom_ppo import CustomPPO
-from src.coordinated_multi_market.learning_utils import (
+# Imports from this version package (counterfactual RI reward; shared rolling_intrinsic)
+from src.coordinated_multi_market.v2_counterfactual_reward.basic_battery_dam_env import (
+    BasicBatteryDAM,
+)
+from src.coordinated_multi_market.v2_counterfactual_reward.custom_ppo import CustomPPO
+from src.coordinated_multi_market.v2_counterfactual_reward.learning_utils import (
     load_input_data,
     prepare_input_data,
     linear_schedule,
@@ -146,7 +152,10 @@ if __name__ == "__main__":
             batch_size=120,
             vf_coef=0.4,
             learning_rate=linear_schedule(1e-4),
-            gamma = 0.999,
+            gamma=0.999,
+            # 3-action env: idle=0; at most 2 CF replays/day (first buy + first sell hour)
+            counterfactual_idle_action=0,
+            counterfactual_active_mode="first_buy_first_sell",
         )
         reset_num_timesteps = True
 

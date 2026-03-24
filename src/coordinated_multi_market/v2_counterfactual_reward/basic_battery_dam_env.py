@@ -52,7 +52,8 @@ class BasicBatteryDAM(gym.Env):
 
 
        #self._remaining_cycles = 1
-        self.action_space = spaces.Discrete(7)
+        # 0 = idle (0 MW), 1 = full buy/charge (-1), 2 = full sell/discharge (+1)
+        self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(-1, 1, shape=(50,), dtype=np.float32)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
@@ -118,7 +119,10 @@ class BasicBatteryDAM(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         super().reset(seed=seed, options=options)
-        self._reinitialize_input_data_after_reset()
+        day: str | None = None
+        if options is not None:
+            day = options.get("day")
+        self._reinitialize_input_data_after_reset(day=day)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
         self._current_soc = self._start_end_soc
@@ -227,7 +231,7 @@ class BasicBatteryDAM(gym.Env):
 
         """
 
-        invalid_penalty_coef = 1
+        invalid_penalty_coef = 0.1
         if overflow > 1e-6:
             reward -= invalid_penalty_coef * overflow
 
@@ -286,11 +290,15 @@ class BasicBatteryDAM(gym.Env):
         pass
 
     def _map_discrete_action_to_continuous(self, action: int) -> float:
-        # Map discrete action index (0 to 6) to continuous value (-1.0 to 1.0)
-        if action <= 4:
-            return round(-1 + (action / 3), 2)
-        else:
-            return round((action - 3) / 3, 2)
+        """Map discrete action to desired normalized power in [-1, 1]."""
+        a = int(action)
+        if a == 0:
+            return 0.0  # idle
+        if a == 1:
+            return -1.0  # full buy (charge)
+        if a == 2:
+            return 1.0  # full sell (discharge)
+        raise ValueError(f"Invalid action {action}; expected 0, 1, or 2.")
 
     @staticmethod
     def calculate_soc_penalty(current_soc: float) -> float:
@@ -334,8 +342,21 @@ class BasicBatteryDAM(gym.Env):
 
 
 
-    def _reinitialize_input_data_after_reset(self) -> None:
-        self._random_day = self._sample_random_day()
+    def _reinitialize_input_data_after_reset(self, day: str | None = None) -> None:
+        """
+        Load one delivery day. If ``day`` is given (YYYY-MM-DD), use that key from
+        ``_input_data`` (for deterministic replay / counterfactuals). Otherwise
+        sample a random day as before.
+        """
+        if day is None:
+            self._random_day = self._sample_random_day()
+        else:
+            day_key = str(day)
+            if day_key not in self._input_data:
+                raise ValueError(
+                    f"reset(day=...): day {day_key!r} not found in input_data keys."
+                )
+            self._random_day = day_key
 
         self._forecasted_price_vector = self._input_data[self._random_day]["price_forecast"]
         self._realized_price_vector = self._input_data[self._random_day]["price_realized"]

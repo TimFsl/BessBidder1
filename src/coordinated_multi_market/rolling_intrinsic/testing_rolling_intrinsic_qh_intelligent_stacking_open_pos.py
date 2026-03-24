@@ -10,9 +10,6 @@ from loguru import logger
 # Suppress noisy warnings from dependencies
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1])) 
 
 # Default path for precomputed VWAP matrices
 from src.shared.config import PRECOMPUTED_VWAP_PATH
@@ -210,12 +207,20 @@ def build_battery_model(
     cap: float,
     c_rate: float,
     roundtrip_eff: float,
-) -> Tuple[gp.Model, Dict[str, Any], Dict[Any, gp.Constr], gp.Constr, gp.Constr]:
+) -> Tuple[
+    gp.Model,
+    Dict[str, Any],
+    Dict[Any, gp.Constr],
+    gp.Constr,
+    gp.Constr,
+    gp.Constr,
+]:
     """
     Build a persistent Gurobi model for a single battery over a full delivery day.
 
     Variables (indexed by quarter-hour in T):
     - current_buy_qh, current_sell_qh: buy/sell volumes in each QH
+    - current_sell_free_qh, current_sell_constr_qh: split of total sells
     - battery_soc: state of charge
     - net_buy, net_sell: true charging/discharging flows
     - charge_sign: binary flag to prevent simultaneous charge+discharge
@@ -230,15 +235,14 @@ def build_battery_model(
     m = gp.Model("battery_persistent")
     m.Params.OutputFlag = 0
 
-    # Original trade decision vars
+    # Trade decision vars
     current_buy_qh = m.addVars(T, lb=0.0, name="current_buy_qh")
     current_sell_qh = m.addVars(T, lb=0.0, name="current_sell_qh")
 
-    # NEW: split sell into free + constrained (DA-long unwind)
+    # Split sells into free vs constrained channels
     current_sell_free_qh = m.addVars(T, lb=0.0, name="current_sell_free_qh")
     current_sell_constr_qh = m.addVars(T, lb=0.0, name="current_sell_constr_qh")
 
-    # Enforce split identity
     for i in T:
         m.addConstr(
             current_sell_qh[i]
@@ -252,7 +256,7 @@ def build_battery_model(
     net_sell = m.addVars(T, lb=0.0, name="net_sell")
     charge_sign = m.addVars(T, vtype=gp.GRB.BINARY, name="charge_sign")
 
-    # Aux vars (existing)
+    # Aux vars
     z = m.addVars(T, lb=0.0, name="z")
     w = m.addVars(T, lb=0.0, name="w")
 
@@ -286,7 +290,9 @@ def build_battery_model(
 
         # Big-M constraints to prevent simultaneous buy/sell
         m.addConstr(net_buy[i] <= M * charge_sign[i], name=f"NetBuyBigM_{i}")
-        m.addConstr(net_sell[i] <= M * (1 - charge_sign[i]), name=f"NetSellBigM_{i}")
+        m.addConstr(
+            net_sell[i] <= M * (1 - charge_sign[i]), name=f"NetSellBigM_{i}"
+        )
 
         # Auxiliary variable z for charging
         m.addConstr(z[i] <= charge_sign[i] * M, name=f"ZUpper_{i}")
@@ -304,7 +310,9 @@ def build_battery_model(
         )
         m.addConstr(w[i] >= 0.0, name=f"WNonNeg_{i}")
 
-    # Netting constraints (RHS updated per bucket)
+    # Netting constraints:
+    # z[i] - w[i] - current_buy_qh[i] + current_sell_qh[i] = RHS
+    # RHS will be updated per bucket (prev_net_buy - prev_net_sell)
     netting_constr: Dict[Any, gp.Constr] = {}
     for i in T:
         c = m.addConstr(
@@ -313,16 +321,21 @@ def build_battery_model(
         )
         netting_constr[i] = c
 
-    # Cycle constraint (RHS updated per bucket)
+    # Cycle constraint: sum of charged energy <= allowed_cycles * cap
+    # RHS will be updated per bucket via max_cycles_constr.RHS
     max_cycles_constr = m.addConstr(
         gp.quicksum(net_buy[i] * efficiency / 4.0 for i in T) <= 0.0,
         name="MaxCycles",
     )
 
-    # NEW: DA-long budget constraint for constrained sells (energy-based, MWh)
+    # DA-long and free-sell energy budgets (RHS updated per bucket)
     da_long_budget_constr = m.addConstr(
         gp.quicksum(current_sell_constr_qh[i] / 4.0 for i in T) <= 0.0,
         name="DALongBudget",
+    )
+    free_sell_budget_constr = m.addConstr(
+        gp.quicksum(current_sell_free_qh[i] / 4.0 for i in T) <= 0.0,
+        name="FreeSellBudget",
     )
 
     m.setObjective(0.0, gp.GRB.MAXIMIZE)
@@ -342,7 +355,15 @@ def build_battery_model(
         "efficiency": efficiency,
     }
 
-    return m, vars_dict, netting_constr, max_cycles_constr, da_long_budget_constr
+    return (
+        m,
+        vars_dict,
+        netting_constr,
+        max_cycles_constr,
+        da_long_budget_constr,
+        free_sell_budget_constr,
+    )
+
 
 def solve_bucket_with_persistent_model(
     m: gp.Model,
@@ -350,10 +371,12 @@ def solve_bucket_with_persistent_model(
     netting_constr: Dict[Any, gp.Constr],
     max_cycles_constr: gp.Constr,
     da_long_budget_constr: gp.Constr,
+    free_sell_budget_constr: gp.Constr,
     prices_qh: pd.DataFrame,
     execution_time: pd.Timestamp,
     discount_rate: float,
     prev_net_trades: pd.DataFrame,
+    da_net_trades: pd.DataFrame,
     allowed_cycles: float,
     p_da_buy: float | None,
     tau: float,
@@ -362,24 +385,17 @@ def solve_bucket_with_persistent_model(
     """
     Solve one intraday bucket using a persistent battery model.
 
-    - Updates RHS of netting and cycle constraints based on previous trades.
+    - Updates RHS of netting, cycle and energy-budget constraints based on
+      previous trades and DA-long state.
     - Rebuilds the objective from discounted prices.
     - Returns:
         results: quarter-hourly decision variables
         trades:  realized trades in this bucket
         objval:  objective value (profit)
-      If no optimal solution is found, returns (None, empty_trades, 0.0).
-
-    Additions:
-    - DA-long constrained sells gated by VWAP >= p_da_buy + tau
-    - Total constrained-sell energy limited by r_long_remaining_mwh
-    - Prevent bypass via free sells while DA-long remains and the product has positive carried position
-
-    Returns:
-      results, trades, objval, r_long_remaining_mwh_new
+        r_long_remaining_mwh_new: updated DA-long inventory (MWh)
+      If no optimal solution is found, returns (None, empty_trades, 0.0, r_long).
     """
     T = list(prices_qh.index)
-
     current_buy_qh = vars["current_buy_qh"]
     current_sell_qh = vars["current_sell_qh"]
     current_sell_free_qh = vars["current_sell_free_qh"]
@@ -392,23 +408,49 @@ def solve_bucket_with_persistent_model(
     # 1) Prepare discounted prices
     prices_qh_adj_all = adjust_prices_block(prices_qh, execution_time, discount_rate)
     prev_net_trades = prev_net_trades.reindex(prices_qh.index).fillna(0.0)
+    da_net_trades = da_net_trades.reindex(prices_qh.index).fillna(0.0)
 
     eps = 0.01
 
     # 2) Set RHS of cycle constraint
     max_cycles_constr.RHS = allowed_cycles * 1.0  # *cap (if cap != 1)
 
-    # 2b) Set RHS of DA-long budget constraint (energy, MWh)
+    # 2b) DA-long budget RHS (MWh)
     da_long_budget_constr.RHS = max(0.0, float(r_long_remaining_mwh))
 
-    # 3) Update netting RHS and bounds
+    # 2c) Free-sell budget RHS:
+    # - pure intraday (no DA trades, no DA-long): fall back to cap - r_long (cap=1)
+    # - otherwise: tight intraday-only net-long budget
+    if (
+        float(r_long_remaining_mwh) <= 1e-9
+        and float(da_net_trades["net_buy"].sum()) <= 1e-9
+        and float(da_net_trades["net_sell"].sum()) <= 1e-9
+    ):
+        cap = 1.0
+        free_mwh = max(0.0, cap - float(r_long_remaining_mwh))
+        free_sell_budget_constr.RHS = float(free_mwh)
+    else:
+        signed_all = (
+            prev_net_trades["net_buy"].astype(float)
+            - prev_net_trades["net_sell"].astype(float)
+        )
+        signed_da = (
+            da_net_trades["net_buy"].astype(float)
+            - da_net_trades["net_sell"].astype(float)
+        )
+        signed_id = signed_all - signed_da
+        free_long_mwh = float(
+            np.clip(signed_id.to_numpy(dtype=float), 0.0, None).sum() / 4.0
+        )
+        free_sell_budget_constr.RHS = max(0.0, free_long_mwh)
+
+    # 3) Update netting RHS and variable bounds for NaNs
     for i in T:
         prev_nb = float(prev_net_trades.loc[i, "net_buy"])
         prev_ns = float(prev_net_trades.loc[i, "net_sell"])
-        prev_pos = prev_nb - prev_ns  # signed MW
 
-        # RHS = carried net position into this bucket
-        netting_constr[i].RHS = float(prev_pos)
+        # RHS = prev_nb - prev_ns (net position carried into this bucket)
+        netting_constr[i].RHS = float(prev_nb - prev_ns)
 
         price = prices_qh.loc[i, "price"]
         if pd.isna(price):
@@ -423,25 +465,20 @@ def solve_bucket_with_persistent_model(
         current_buy_qh[i].UB = gp.GRB.INFINITY
         current_sell_qh[i].UB = gp.GRB.INFINITY
 
-        # Spread gate for constrained sells
+        # Constrained sells only allowed if VWAP >= p_da_buy + tau and DA-long exists
         if (
-            (p_da_buy is not None)
-            and (float(r_long_remaining_mwh) > 1e-9)
-            and (float(price) >= float(p_da_buy) + float(tau))
+            p_da_buy is not None
+            and float(r_long_remaining_mwh) > 1e-9
+            and float(price) >= float(p_da_buy) + float(tau)
         ):
             current_sell_constr_qh[i].UB = gp.GRB.INFINITY
         else:
             current_sell_constr_qh[i].UB = 0.0
 
-        # Prevent bypass via free sells while DA-long remains:
-        # If there's still DA-long to unwind and this product currently carries a long position,
-        # forbid free sells in this product.
-        if float(r_long_remaining_mwh) > 1e-6: # and prev_pos > 1e-6:
-            current_sell_free_qh[i].UB = 0.0
-        else:
-            current_sell_free_qh[i].UB = gp.GRB.INFINITY
+        # Free sells always allowed (budgeted by FreeSellBudget)
+        current_sell_free_qh[i].UB = gp.GRB.INFINITY
 
-    # 4) Rebuild objective function (unchanged, still uses current_sell_qh)
+    # 4) Rebuild objective function (same profit logic + tiny tie-breaker)
     obj = gp.LinExpr()
     for i in T:
         price = prices_qh.loc[i, "price"]
@@ -454,7 +491,6 @@ def solve_bucket_with_persistent_model(
         price_sell_adj = float(prices_qh_adj_all.loc[i, "price_sell_adj"])
         price_buy_adj = float(prices_qh_adj_all.loc[i, "price_buy_adj"])
 
-        # Slightly different spread if there was no previous position
         if prev_nb < eps and prev_ns < eps:
             term = (
                 current_sell_qh[i] * (price_sell_adj - 0.1 / 2 - eps)
@@ -468,6 +504,12 @@ def solve_bucket_with_persistent_model(
 
         obj += term
 
+    # Prefer constrained sells when indifferent (tiny bonus)
+    prefer_eps = 1e-4
+    obj += prefer_eps * gp.quicksum(
+        current_sell_constr_qh[i] / 4.0 for i in T
+    )
+
     m.setObjective(obj, gp.GRB.MAXIMIZE)
 
     # 5) Optimize
@@ -476,7 +518,14 @@ def solve_bucket_with_persistent_model(
     if m.status != gp.GRB.OPTIMAL:
         logger.warning("No optimal solution found for current bucket.")
         empty_trades = pd.DataFrame(
-            columns=["execution_time", "side", "quantity", "price", "product", "profit"]
+            columns=[
+                "execution_time",
+                "side",
+                "quantity",
+                "price",
+                "product",
+                "profit",
+            ]
         )
         return None, empty_trades, 0.0, float(r_long_remaining_mwh)
 
@@ -486,8 +535,6 @@ def solve_bucket_with_persistent_model(
         columns=[
             "current_buy_qh",
             "current_sell_qh",
-            "current_sell_free_qh",
-            "current_sell_constr_qh",
             "net_buy",
             "net_sell",
             "charge_sign",
@@ -499,8 +546,6 @@ def solve_bucket_with_persistent_model(
     for i in T:
         cb = float(current_buy_qh[i].X)
         cs = float(current_sell_qh[i].X)
-        cs_free = float(current_sell_free_qh[i].X)
-        cs_constr = float(current_sell_constr_qh[i].X)
 
         if cb > 0:
             trade_rows.append(
@@ -527,8 +572,6 @@ def solve_bucket_with_persistent_model(
 
         results.loc[i, "current_buy_qh"] = cb
         results.loc[i, "current_sell_qh"] = cs
-        results.loc[i, "current_sell_free_qh"] = cs_free
-        results.loc[i, "current_sell_constr_qh"] = cs_constr
         results.loc[i, "net_buy"] = float(net_buy[i].X)
         results.loc[i, "net_sell"] = float(net_sell[i].X)
         results.loc[i, "charge_sign"] = float(charge_sign[i].X)
@@ -539,14 +582,15 @@ def solve_bucket_with_persistent_model(
         columns=["execution_time", "side", "quantity", "price", "product", "profit"],
     )
 
-    # Update remaining DA-long (energy, MWh) by realized constrained sells in this bucket
-    sold_constr_mwh = float(sum(current_sell_constr_qh[i].X / 4.0 for i in T))
-    r_long_remaining_mwh_new = max(0.0, float(r_long_remaining_mwh) - sold_constr_mwh)
+    # Update DA-long inventory by constrained sells in this bucket
+    sold_constr_mwh = float(
+        sum(vars["current_sell_constr_qh"][i].X / 4.0 for i in T)
+    )
+    r_long_remaining_mwh_new = max(
+        0.0, float(r_long_remaining_mwh) - sold_constr_mwh
+    )
 
-    return results, trades, float(m.ObjVal), float(r_long_remaining_mwh_new)
-
-
-
+    return results, trades, float(m.ObjVal), r_long_remaining_mwh_new
 
 
 def derive_day_ahead_trades_from_drl_output(
@@ -617,13 +661,16 @@ def simulate_days_stacked_quarterhourly_products(
     vwaps_base_path: str = PRECOMPUTED_VWAP_PATH,
 ) -> None:
     """
-    Test-mode simulation with CSV outputs
+    Test-mode simulation with CSV outputs (similar to legacy script),
+    but using the fast persistent Gurobi battery model.
 
     - Reads DRL day-ahead bids from da_bids_path.
     - Writes:
         * trades per day -> {output_path}/trades/trades_YYYY-MM-DD.csv
         * VWAP logs       -> {output_path}/vwap/vwaps_YYYY-MM-DD.csv
         * profit/cycles   -> {output_path}/profit.csv
+
+    This function does not return anything.
     """
     log_message = (
         "Running FAST rolling intrinsic QH TEST with parameters:\n"
@@ -674,7 +721,7 @@ def simulate_days_stacked_quarterhourly_products(
         logger.info(f"Current delivery day: {current_day}")
 
         all_trades = pd.DataFrame(
-            columns=["execution_time", "side", "quantity", "price", "product", "profit", "market"]
+            columns=["execution_time", "side", "quantity", "price", "product", "profit"]
         )
 
         # Derive day-ahead trades from DRL output
@@ -682,40 +729,67 @@ def simulate_days_stacked_quarterhourly_products(
             day_ahead_trades_drl = derive_day_ahead_trades_from_drl_output(
                 drl_output, current_day
             )
-            day_ahead_trades_drl["market"] = "DA"
             all_trades = pd.concat(
                 [all_trades, day_ahead_trades_drl], ignore_index=True
             )
-
         except KeyError:
             logger.warning(
                 f"No DRL day-ahead trades for {current_day:%Y-%m-%d} in file "
                 f"{da_bids_path} – intraday-only optimization."
             )
 
-        # --- NEW: DA reference price (weighted avg buy price) and remaining DA-long (MWh) ---
+        # DA reference price and DA-long inventory (MWh)
         p_da_buy: float | None = None
         r_long_remaining_mwh: float = 0.0
+        da_net_trades = get_net_trades(
+            pd.DataFrame(
+                columns=[
+                    "execution_time",
+                    "side",
+                    "quantity",
+                    "price",
+                    "product",
+                    "profit",
+                ]
+            ),
+            trading_end,
+        )
 
+        tau = 1.0  # spread gate in €/MWh
+
+        # Initialize from DA trades if present
         try:
-            # Weighted average DA buy price (€/MWh)
             da_buys = day_ahead_trades_drl[day_ahead_trades_drl["side"] == "buy"]
             if len(da_buys) > 0:
                 q = da_buys["quantity"].to_numpy(dtype=float)
                 p = da_buys["price"].to_numpy(dtype=float)
                 p_da_buy = float((q * p).sum() / max(1e-12, q.sum()))
 
-            # DA-long surplus in energy terms (MWh): sum(max(net_pos,0))/4
-            da_trades = get_net_trades(day_ahead_trades_drl, trading_end)
-            buy_mwh = da_trades.loc[da_trades.side == "buy", "quantity"].sum() / 4.0
-            sell_mwh = da_trades.loc[da_trades.side == "sell", "quantity"].sum() / 4.0
-            r_long_remaining_mwh = max(0.0, buy_mwh * roundtrip_eff - sell_mwh)
-
+            da_net_trades = get_net_trades(day_ahead_trades_drl, trading_end)
+            buy_mwh = float(da_net_trades["net_buy"].sum()) / 4.0
+            sell_mwh = float(da_net_trades["net_sell"].sum()) / 4.0
+            r_long_remaining_mwh = max(
+                0.0, buy_mwh * efficiency - sell_mwh / efficiency
+            )
         except Exception as e:
-            logger.warning(f"Could not initialize DA-long state: {e}")
+            logger.warning(
+                f"Could not initialize DA-long state for {current_day:%Y-%m-%d}: {e}"
+            )
             p_da_buy = None
             r_long_remaining_mwh = 0.0
-
+            da_net_trades = get_net_trades(
+                pd.DataFrame(
+                    columns=[
+                        "execution_time",
+                        "side",
+                        "quantity",
+                        "price",
+                        "product",
+                        "profit",
+                    ]
+                ),
+                trading_end,
+            )
 
         trading_start = current_day - pd.Timedelta(hours=8)
         trading_end = current_day + pd.Timedelta(days=1)
@@ -735,10 +809,14 @@ def simulate_days_stacked_quarterhourly_products(
         )
 
         # Build persistent Gurobi model
-        m, vars_dict, netting_constr, max_cycles_constr, da_long_budget_constr = build_battery_model(
-            T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff
-            )
-
+        (
+            m,
+            vars_dict,
+            netting_constr,
+            max_cycles_constr,
+            da_long_budget_constr,
+            free_sell_budget_constr,
+        ) = build_battery_model(T, cap=1.0, c_rate=c_rate, roundtrip_eff=roundtrip_eff)
 
         # Load VWAP matrix for this day
         try:
@@ -820,27 +898,26 @@ def simulate_days_stacked_quarterhourly_products(
                     execution_time_start + pd.Timedelta(minutes=bucket_size)
                 )
                 continue
-            
-            tau = 1.0        
-            try:
-                _, trades, profit = solve_bucket_with_persistent_model(
-                        m=m,
-                        vars=vars_dict,
-                        netting_constr=netting_constr,
-                        max_cycles_constr=max_cycles_constr,
-                        da_long_budget_constr=da_long_budget_constr,
-                        prices_qh=vwap,
-                        execution_time=execution_time_start,
-                        discount_rate=discount_rate,
-                        prev_net_trades=net_trades,
-                        allowed_cycles=allowed_cycles,
-                        p_da_buy=p_da_buy,
-                        tau=tau,
-                        r_long_remaining_mwh=r_long_remaining_mwh,
-                )
 
+            try:
+                _, trades, profit, r_long_remaining_mwh = solve_bucket_with_persistent_model(
+                    m=m,
+                    vars=vars_dict,
+                    netting_constr=netting_constr,
+                    max_cycles_constr=max_cycles_constr,
+                    da_long_budget_constr=da_long_budget_constr,
+                    free_sell_budget_constr=free_sell_budget_constr,
+                    prices_qh=vwap,
+                    execution_time=execution_time_start,
+                    discount_rate=discount_rate,
+                    prev_net_trades=net_trades,
+                    da_net_trades=da_net_trades,
+                    allowed_cycles=allowed_cycles,
+                    p_da_buy=p_da_buy,
+                    tau=tau,
+                    r_long_remaining_mwh=r_long_remaining_mwh,
+                )
                 # trades may be empty, but concat is robust
-                trades["market"] = "IDC"
                 all_trades = pd.concat(
                     [all_trades, trades], ignore_index=True
                 )

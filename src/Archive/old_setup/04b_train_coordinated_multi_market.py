@@ -16,13 +16,11 @@ Requires:
 import os
 import pandas as pd
 import torch
-import warnings
 
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
-
 
 from src.coordinated_multi_market.basic_battery_dam_env import BasicBatteryDAM
 from src.coordinated_multi_market.custom_ppo import CustomPPO
@@ -31,7 +29,7 @@ from src.coordinated_multi_market.learning_utils import (
     prepare_input_data,
     linear_schedule,
     orthogonal_weight_init,
-    # CustomPPO,
+    CustomPPO,
 )
 
 from src.shared.folder_versioning import create_new_dir_version
@@ -43,49 +41,36 @@ from src.shared.config import (
     SCALER_OUTPUT_PATH_COORDINATED,
     SEED,
     TENSORBOARD_PATH_INTELLIGENT,
-    TRAIN_CSV_NAME,
     TRAINING_STEPS_INTELLIGENT,
 )
-warnings.simplefilter(action="ignore", category=FutureWarning)
-
-
-
-RESUME_TRAINING = False      # set to TRUE, if training should be continued from a checkpoint
-
-# Only relevant if RESUME_TRAINING = True
-MODEL_NUMBER = "3"  
-MODEL_CHECKPOINT = "ppo_stacked_checkpoint_280000_steps"
-
 
 if __name__ == "__main__":
-    
     # Ensure output folders exist
     os.makedirs(LOGGING_PATH_COORDINATED, exist_ok=True)
     os.makedirs(MODEL_OUTPUT_PATH_COORDINATED, exist_ok=True)
     os.makedirs(SCALER_OUTPUT_PATH_COORDINATED, exist_ok=True)
 
-
-    if RESUME_TRAINING:
-        versioned_log_path = os.path.join(LOGGING_PATH_COORDINATED, MODEL_NUMBER)
-        versioned_model_path = os.path.join(MODEL_OUTPUT_PATH_COORDINATED, MODEL_NUMBER)
-        versioned_scaler_path = os.path.join(SCALER_OUTPUT_PATH_COORDINATED, MODEL_NUMBER)
-    else:
-        versioned_log_path = create_new_dir_version(LOGGING_PATH_COORDINATED)
-        versioned_model_path = create_new_dir_version(MODEL_OUTPUT_PATH_COORDINATED)
-        versioned_scaler_path = create_new_dir_version(SCALER_OUTPUT_PATH_COORDINATED)
-
-    train_log_path = os.path.join(versioned_log_path, TRAIN_CSV_NAME)
-    print(f"[Train Script] Train log CSV: {train_log_path}")
+    # Create versioned output folders
+    versioned_log_path = create_new_dir_version(LOGGING_PATH_COORDINATED)
+    versioned_model_path = create_new_dir_version(MODEL_OUTPUT_PATH_COORDINATED)
+    versioned_scaler_path = create_new_dir_version(SCALER_OUTPUT_PATH_COORDINATED)
 
     # Use GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Load and prepare input data
-    df_spot_train, df_spot_val, df_spot_test = load_input_data(write_test=False)
+    # Load and prepare training data
+    df_spot_train, df_spot_test = load_input_data(write_test=True)
 
-    # Fürs Training nur df_spot_train verwenden
-    input_data_train = prepare_input_data(df_spot_train, versioned_scaler_path, fit_scaler=True)
+    # Drop problematic days known to break RI algorithm
+    df_spot_train = df_spot_train[
+        ~df_spot_train.index.date.isin(
+            [pd.Timestamp("2020-11-15").date(), pd.Timestamp("2020-12-27").date()]
+        )
+    ]
+
+    # Apply preprocessing and feature scaling
+    input_data_train = prepare_input_data(df_spot_train, versioned_scaler_path)
 
     # Initialize training environment
     env = BasicBatteryDAM(
@@ -95,7 +80,7 @@ if __name__ == "__main__":
         round_trip_efficiency=RTE,
     )
 
-    # Validate environment
+    # Validate custom environment (optional)
     check_env(env)
     env = Monitor(env)
     env = DummyVecEnv([lambda: env])
@@ -115,46 +100,34 @@ if __name__ == "__main__":
         # init_fn=orthogonal_weight_init,  # Optional: Orthogonal weight init
     )
 
-    if RESUME_TRAINING:
-        load_path = os.path.join(
-            versioned_model_path,
-            MODEL_CHECKPOINT + ".zip",
-        )
-        print(f"Resuming training from: {load_path}")
+    # Load pretrained model if continuing training
+    # model = CustomPPO.load(
+    #     path=os.path.join('output/multi_market_engine/models/80', 'ppo_stacked_checkpoint_220000_steps'),
+    # )
+    # model.set_env(env)
 
-        model = CustomPPO.load(load_path, device=device)
-        model.set_env(env)
-        model.train_log_path = train_log_path
-
-        reset_num_timesteps = False
-    else:
-        print("Starting training from scratch.")
-
-        model = CustomPPO(
-            "MlpPolicy",
-            env,
-            verbose=0,
-            tensorboard_log=TENSORBOARD_PATH_INTELLIGENT,
-            device=device,
-            seed=SEED,
-            intraday_product_type="QH",
-            train_log_path=train_log_path,
-            policy_kwargs=policy_kwargs,
-            ent_coef=0.05,
-            n_steps=480,
-            clip_range=0.4,
-            batch_size=120,
-            vf_coef=0.4,
-            learning_rate=linear_schedule(1e-4),
-            gamma = 0.999,
-        )
-        reset_num_timesteps = True
+    # Instantiate a new PPO model
+    model = CustomPPO(
+        "MlpPolicy",
+        env,
+        verbose=0,
+        tensorboard_log=TENSORBOARD_PATH_INTELLIGENT,
+        device=device,
+        seed=SEED,
+        intraday_product_type="QH",
+        policy_kwargs=policy_kwargs,
+        ent_coef=0.05,
+        n_steps=512,
+        clip_range=0.4,
+        batch_size=128,
+        vf_coef=0.4,
+        learning_rate=linear_schedule(0.003),
+    )
 
     # Train the model
     model.learn(
         total_timesteps=TRAINING_STEPS_INTELLIGENT,
         callback=checkpoint_callback,
-        reset_num_timesteps=reset_num_timesteps
     )
 
     # Save the final model
