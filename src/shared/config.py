@@ -64,9 +64,9 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 # Column used as DA "forecast" in the env (for ablation: epex = realized, exaa = EXAA forecast)
 DA_PRICE_FORECAST_COLUMN = "exaa_15min_de_lu_eur_per_mwh", #"epex_spot_60min_de_lu_eur_per_mwh"  # or "exaa_15min_de_lu_eur_per_mwh"
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 10_000_000
-TRAINING_STEPS_BASIC = 10_000_000
-START_IDC_STEPS = 900_000
+TRAINING_STEPS_INTELLIGENT = 3_000_000
+TRAINING_STEPS_BASIC = 3_000_000
+START_IDC_STEPS = 600_000
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 
