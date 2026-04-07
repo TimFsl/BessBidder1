@@ -419,13 +419,12 @@ def solve_bucket_with_persistent_model(
     da_long_budget_constr.RHS = max(0.0, float(r_long_remaining_mwh))
 
     # 2c) Free-sell budget RHS:
-    # - pure intraday (no DA trades, no DA-long): fall back to cap - r_long (cap=1)
-    # - otherwise: tight intraday-only net-long budget
-    if (
-        float(r_long_remaining_mwh) <= 1e-9
-        and float(da_net_trades["net_buy"].sum()) <= 1e-9
-        and float(da_net_trades["net_sell"].sum()) <= 1e-9
-    ):
+    # - If effective DA-long inventory is (nearly) zero, fall back to an
+    #   effectively non-binding behaviour to avoid suppressing intraday
+    #   trades even when DA contains both buys and sells that cancel in
+    #   inventory terms.
+    # - Otherwise: tight intraday-only net-long budget
+    if float(r_long_remaining_mwh) <= 1e-9:
         cap = 1.0
         free_mwh = max(0.0, cap - float(r_long_remaining_mwh))
         free_sell_budget_constr.RHS = float(free_mwh)

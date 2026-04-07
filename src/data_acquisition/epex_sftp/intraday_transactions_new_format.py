@@ -5,7 +5,9 @@ import tempfile
 import warnings
 import zipfile
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path, PurePosixPath
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -18,9 +20,8 @@ from sqlalchemy import Engine, create_engine
 #warnings.simplefilter(action="ignore", category=FutureWarning)
 import platform
 
-if platform.system() == "Darwin":
-    os.environ.setdefault("TMPDIR", "/tmp")
-    tempfile.tempdir = "/tmp"
+EPEX_CACHE_DIR = Path(os.getenv("EPEX_CACHE_DIR", Path.home() / ".cache" / "epex"))
+EPEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 load_dotenv()
 
@@ -108,12 +109,38 @@ def download_intraday_transaction_zip_archive(
         zip_file_name = sorted(zip_files)[-1]
 
         remote_file_path = PurePosixPath(remote_path, zip_file_name)
+        local_path.mkdir(parents=True, exist_ok=True)
         local_file_path = Path(local_path, zip_file_name)
+
+        if local_file_path.exists() and local_file_path.stat().st_size > 0:
+            logging.info(f"[{year}] Using cached ZIP: {local_file_path}")
+            return local_file_path
 
         logging.info(f"[{year}] Downloading {remote_file_path} -> {local_file_path}")
 
         # Try to download the file with prefetch disabled
-        sftp.get(remote_file_path.as_posix(), local_file_path.as_posix(), prefetch=False)
+        last_logged_mb = -1
+
+        def _progress(transferred: int, total: int) -> None:
+            nonlocal last_logged_mb
+            # Log every ~50 MiB to avoid spamming
+            transferred_mb = transferred // (50 * 1024 * 1024)
+            if transferred_mb != last_logged_mb:
+                last_logged_mb = transferred_mb
+                if total:
+                    pct = (transferred / total) * 100
+                    logging.info(
+                        f"[{year}] Download progress: {transferred/1024/1024:.0f} MiB / {total/1024/1024:.0f} MiB ({pct:.1f}%)"
+                    )
+                else:
+                    logging.info(f"[{year}] Download progress: {transferred/1024/1024:.0f} MiB")
+
+        sftp.get(
+            remote_file_path.as_posix(),
+            local_file_path.as_posix(),
+            prefetch=False,
+            callback=_progress,
+        )
 
         return local_file_path
 
@@ -157,6 +184,62 @@ def fetch_csv_file_names(path: Path) -> List[str]:
     return csv_files
 
 
+def _iter_csv_members_from_zip(zip_file: zipfile.ZipFile):
+    for info in zip_file.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename
+        lower = name.lower()
+        if lower.endswith(".csv"):
+            yield ("csv", name)
+        elif lower.endswith(".zip"):
+            yield ("zip", name)
+
+
+def count_csv_files_in_zip_path(zip_path: Path) -> int:
+    """Count CSV files inside a ZIP, including inside nested ZIPs."""
+    total = 0
+    with zipfile.ZipFile(zip_path.as_posix(), "r") as outer:
+        for kind, member_name in _iter_csv_members_from_zip(outer):
+            if kind == "csv":
+                total += 1
+                continue
+
+            with outer.open(member_name, "r") as nested_fh:
+                nested_bytes = nested_fh.read()
+            with zipfile.ZipFile(BytesIO(nested_bytes), "r") as nested_zip:
+                for nested_kind, _nested_member_name in _iter_csv_members_from_zip(
+                    nested_zip
+                ):
+                    if nested_kind == "csv":
+                        total += 1
+    return total
+
+
+def iter_csv_file_handles_from_zip_path(zip_path: Path):
+    """
+    Yield (display_name, file_handle) pairs for all CSV files found inside the given ZIP,
+    including CSVs inside nested ZIPs, without extracting to disk.
+    """
+    with zipfile.ZipFile(zip_path.as_posix(), "r") as outer:
+        for kind, member_name in _iter_csv_members_from_zip(outer):
+            if kind == "csv":
+                with outer.open(member_name, "r") as fh:
+                    yield member_name, fh
+            else:
+                # Nested zip: read bytes once and iterate its CSVs
+                with outer.open(member_name, "r") as nested_fh:
+                    nested_bytes = nested_fh.read()
+                with zipfile.ZipFile(BytesIO(nested_bytes), "r") as nested_zip:
+                    for nested_kind, nested_member_name in _iter_csv_members_from_zip(
+                        nested_zip
+                    ):
+                        if nested_kind != "csv":
+                            continue
+                        with nested_zip.open(nested_member_name, "r") as fh:
+                            yield f"{member_name}::{nested_member_name}", fh
+
+
 def extract_data_from_csv_file(path: Path, filename: str) -> pd.DataFrame:
     """Extract data from a specific CSV file."""
     full_path = Path(path, filename)
@@ -176,6 +259,24 @@ def extract_data_from_csv_file(path: Path, filename: str) -> pd.DataFrame:
         pd.to_datetime(df["ExecutionTime"], utc=True)
     ).tz_convert("Europe/Berlin")
 
+    return df
+
+
+def extract_data_from_csv_handle(file_handle) -> pd.DataFrame:
+    """Extract data from a CSV file-like object (e.g., streamed from a ZIP)."""
+    df = pd.read_csv(
+        file_handle,
+        skiprows=1,
+    )
+    df["DeliveryStart"] = pd.DatetimeIndex(
+        pd.to_datetime(df["DeliveryStart"], utc=True)
+    ).tz_convert("Europe/Berlin")
+    df["DeliveryEnd"] = pd.DatetimeIndex(
+        pd.to_datetime(df["DeliveryEnd"], utc=True)
+    ).tz_convert("Europe/Berlin")
+    df["ExecutionTime"] = pd.DatetimeIndex(
+        pd.to_datetime(df["ExecutionTime"], utc=True)
+    ).tz_convert("Europe/Berlin")
     return df
 
 
@@ -264,37 +365,46 @@ def execute_etl_transactions_new_format(years: List[int]) -> None:
         f"postgresql://{POSTGRES_USERNAME}{password_for_url}@{POSTGRES_DB_HOST}/{THESIS_DB_NAME}"
     )
     for year in years:
-        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as tmpdirname:
-            transaction_archive_location = download_intraday_transaction_zip_archive(
-                remote_path=TRANSACTION_HISTORICAL_DATA_PATH_PREFIX,
-                local_path=Path(tmpdirname),
-                file_name_prefix=TRANSACTION_ZIP_FILE_NAME_PREFIX,
-                year=year,
-            )
-            logging.info(f"[{year}] ZIP downloaded to: {transaction_archive_location}")
+        transaction_archive_location = download_intraday_transaction_zip_archive(
+            remote_path=TRANSACTION_HISTORICAL_DATA_PATH_PREFIX,
+            local_path=EPEX_CACHE_DIR,
+            file_name_prefix=TRANSACTION_ZIP_FILE_NAME_PREFIX,
+            year=year,
+        )
+        logging.info(f"[{year}] ZIP available at: {transaction_archive_location}")
 
-            unpacked_archive_path = unpack_archive(transaction_archive_location)
-            filenames = fetch_csv_file_names(path=unpacked_archive_path)
-            logging.info(f"[{year}] Found {len(filenames)} CSV files in {unpacked_archive_path}")
-            for idx, filename in enumerate(filenames):
-                logging.info(
-                    f"Processing {filename} - File #{idx + 1} from {len(filenames)}"
-                )
-                df = extract_data_from_csv_file(unpacked_archive_path, filename)
-                # Remove the file immediately after processing
-                file_path = os.path.join(unpacked_archive_path, filename)
-                try:
-                    os.remove(file_path)
-                    logging.info(f"Removed file: {file_path}")
-                except OSError as e:
-                    logging.error(f"Error removing file {file_path}: {e}")
+        total_csv = None
+        try:
+            total_csv = count_csv_files_in_zip_path(transaction_archive_location)
+            logging.info(f"[{year}] ZIP contains ~{total_csv} CSV files (incl. nested ZIPs)")
+        except Exception as e:
+            logging.warning(f"[{year}] Could not count CSV files in ZIP: {e}")
 
-                df_for_db = transform_data(df)
-                load_data(df_for_db, database)
-            shutil.rmtree(unpacked_archive_path, ignore_errors=True)
+        t0 = time.time()
+        processed = 0
+        for display_name, csv_fh in iter_csv_file_handles_from_zip_path(
+            transaction_archive_location
+        ):
+            processed += 1
+            if processed == 1 or processed % 10 == 0:
+                elapsed = max(time.time() - t0, 1e-6)
+                rate = processed / elapsed
+                if total_csv:
+                    pct = (processed / total_csv) * 100
+                    logging.info(
+                        f"[{year}] Processing CSV {processed}/{total_csv} ({pct:.1f}%) at {rate:.2f} files/s. Latest: {display_name}"
+                    )
+                else:
+                    logging.info(
+                        f"[{year}] Processing CSV #{processed} at {rate:.2f} files/s. Latest: {display_name}"
+                    )
+            df = extract_data_from_csv_handle(csv_fh)
+            df_for_db = transform_data(df)
+            load_data(df_for_db, database)
+        logging.info(f"[{year}] Done. Processed {processed} CSV files from ZIP.")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    years = [2024]
+    years = [2024, 2025]
     execute_etl_transactions_new_format(years)

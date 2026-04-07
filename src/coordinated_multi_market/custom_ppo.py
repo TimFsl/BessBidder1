@@ -22,9 +22,9 @@ from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADE
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
 CURRICULUM_MAX_CYCLES = [
-    (300_000, 4.0),
-    (600_000, 3.0),
-    (900_000, 2.0),
+    (300_000, 3.0),
+    (600_000, 2.0),
+    (900_000, 1.0),
     (float("inf"), 1.0),
 ]
 

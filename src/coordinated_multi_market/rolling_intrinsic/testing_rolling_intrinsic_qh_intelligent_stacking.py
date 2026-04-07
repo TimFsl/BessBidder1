@@ -594,6 +594,9 @@ def simulate_days_stacked_quarterhourly_products(
 
     # DRL day-ahead bids
     drl_output = pd.read_csv(da_bids_path, index_col="time", parse_dates=True)
+    # Robust parsing across old/new CSV variants: force DatetimeIndex in UTC first.
+    drl_output.index = pd.to_datetime(drl_output.index, errors="coerce", utc=True)
+    drl_output = drl_output[~drl_output.index.isna()].copy()
     drl_output.index = drl_output.index.tz_convert("Europe/Berlin")
 
     efficiency = roundtrip_eff ** 0.5  # for cycle tracking

@@ -16,16 +16,16 @@ BUCKET_SIZE = 15
 MIN_TRADES = 10
 
 # Data timeframe configuration (importnant for naming csv files, etc.)
-DATA_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-DATA_END   = pd.Timestamp(year=2024, month=12, day=31, tz="Europe/Berlin")
+DATA_START = pd.Timestamp(year=2023, month=2, day=10, tz="Europe/Berlin")
+DATA_END   = pd.Timestamp(year=2025, month=12, day=31, tz="Europe/Berlin")
 
 # Train data timeframe
 TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
 TRAIN_END   = pd.Timestamp(year=2020, month=12, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # Validation timeframe
-VAL_START = pd.Timestamp(year=2023, month=10, day=1, tz="Europe/Berlin")
-VAL_END   = pd.Timestamp(year=2023, month=12, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
+VAL_START = pd.Timestamp(year=2021, month=1, day=1, tz="Europe/Berlin")
+VAL_END   = pd.Timestamp(year=2021, month=3, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # Test timeframe
 TEST_START = pd.Timestamp(year=2023, month=10, day=1, tz="Europe/Berlin")
@@ -41,6 +41,7 @@ PROBLEMATIC_DATES = [
     pd.Timestamp("2020-11-15").date(),
     pd.Timestamp("2020-12-27").date(),
     pd.Timestamp("2020-12-31").date(),
+    pd.Timestamp("2022-07-25").date(),
     
 ]
 
@@ -62,11 +63,11 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 
 # 04 COORDINATED MULTI-MARKET CONFIGURATION
 # Column used as DA "forecast" in the env (for ablation: epex = realized, exaa = EXAA forecast)
-DA_PRICE_FORECAST_COLUMN = "exaa_15min_de_lu_eur_per_mwh", #"epex_spot_60min_de_lu_eur_per_mwh"  # or "exaa_15min_de_lu_eur_per_mwh"
+DA_PRICE_FORECAST_COLUMN = "exaa_15min_de_lu_eur_per_mwh" #"epex_spot_60min_de_lu_eur_per_mwh"  # or "exaa_15min_de_lu_eur_per_mwh"
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 3_000_000
-TRAINING_STEPS_BASIC = 3_000_000
-START_IDC_STEPS = 600_000
+TRAINING_STEPS_INTELLIGENT = 10_000_000
+TRAINING_STEPS_BASIC = 10_000_000
+START_IDC_STEPS = 0
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

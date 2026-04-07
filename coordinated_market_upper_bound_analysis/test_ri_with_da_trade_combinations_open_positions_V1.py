@@ -227,8 +227,8 @@ if __name__ == "__main__":
     run_ri_with_synthetic_da_trades(
         da_prices_path="data/data_2019-01-01_2024-12-31_hourly.csv",
         output_path="coordinated_market_upper_bound_analysis/results_open_positions_V3/",
-        start_day=pd.Timestamp("2019-01-01", tz="Europe/Berlin"),
-        end_day=pd.Timestamp("2023-12-31", tz="Europe/Berlin"),
+        start_day=pd.Timestamp("2022-07-25", tz="Europe/Berlin"),
+        end_day=pd.Timestamp("2022-07-26", tz="Europe/Berlin"),
         discount_rate=0.0,
         c_rate=1.0,
         roundtrip_eff=0.86,

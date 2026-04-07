@@ -32,8 +32,8 @@ DEFAULT_IDLE_DA_ACTION = 0
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
 CURRICULUM_MAX_CYCLES = [
-    (300_000, 3.0),
-    (600_000, 2.0),
+    (300_000, 1.0),
+    (600_000, 1.0),
     (900_000, 1.0),
     (float("inf"), 1.0),
 ]
@@ -56,6 +56,9 @@ class CustomPPO(PPO):
         da_market_reward_weight: float = 1.0,
         cf_reward_weight: float = 1.0,
         cf_only_after_steps: Optional[int] = None,
+        buy_cf_attribution_mode: str = "contextual",
+        reward_normalization_mode: str = "none",
+        reward_normalization_min_scale: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -76,6 +79,34 @@ class CustomPPO(PPO):
         self.da_market_reward_weight = float(da_market_reward_weight)
         self.cf_reward_weight = float(cf_reward_weight)
         self.cf_only_after_steps = cf_only_after_steps
+        self.buy_cf_attribution_mode = str(buy_cf_attribution_mode)
+        self.reward_normalization_mode = str(reward_normalization_mode)
+        self.reward_normalization_min_scale = float(reward_normalization_min_scale)
+
+    def _daily_reward_scale(
+        self, *, dam_price_forecast: np.ndarray
+    ) -> float:
+        """
+        Return a positive scaling factor for this episode's rewards.
+        Uses only forecast prices (observable ex-ante) to avoid leakage.
+        """
+        mode = self.reward_normalization_mode
+        if mode in ("none", "", None):
+            return 1.0
+        if mode == "daily_iqr_forecast":
+            x = np.asarray(dam_price_forecast, dtype=np.float64).ravel()
+            if x.size == 0:
+                return 1.0
+            q75 = float(np.nanquantile(x, 0.75))
+            q25 = float(np.nanquantile(x, 0.25))
+            s = q75 - q25
+            if not np.isfinite(s):
+                s = 1.0
+            return float(max(s, self.reward_normalization_min_scale))
+        raise ValueError(
+            "reward_normalization_mode must be 'none' or 'daily_iqr_forecast', got "
+            f"{mode!r}"
+        )
 
     @staticmethod
     def _unwrap_to_basic_battery_dam(env: VecEnv):
@@ -115,6 +146,44 @@ class CustomPPO(PPO):
             a = int(np.asarray(actions[t]).item())
             if replace_with_idle_at is not None and t == replace_with_idle_at:
                 a = idle_action
+            _obs, r, _term, _trunc, info = replay.step(a)
+            total_da_reward += float(r)
+            volumes.append(float(info["position"]))
+            clearings.append(float(info["clearing_price"]))
+        return (
+            np.asarray(volumes, dtype=np.float64),
+            np.asarray(clearings, dtype=np.float64),
+            total_da_reward,
+        )
+
+    @staticmethod
+    def _replay_episode_with_actions(
+        template_env: BasicBatteryDAM,
+        day: str,
+        actions: np.ndarray,
+        horizon: int,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Physics replay for an explicit action sequence."""
+        from .basic_battery_dam_env import BasicBatteryDAM
+
+        rte = float(template_env._efficiency**2)
+        replay = BasicBatteryDAM(
+            modus=template_env._modus,
+            logging_path=template_env._logging_path,
+            input_data=template_env._input_data,
+            power=template_env._power,
+            capacity=template_env._capacity,
+            round_trip_efficiency=np.float32(rte),
+            start_end_soc=template_env._start_end_soc,
+            max_cycles=float(template_env.max_cycles),
+        )
+        replay.reset(options={"day": day})
+        volumes: list[float] = []
+        clearings: list[float] = []
+        total_da_reward = 0.0
+        a_in = np.asarray(actions).flatten().astype(np.int64, copy=False)
+        for t in range(horizon):
+            a = int(a_in[t])
             _obs, r, _term, _trunc, info = replay.step(a)
             total_da_reward += float(r)
             volumes.append(float(info["position"]))
@@ -330,6 +399,10 @@ class CustomPPO(PPO):
             invalid_penalties = log_invalid_penalty_buffer[
                 row_start : row_start + num_rows
             ].astype(np.float64, copy=False)
+            dam_price_forecast = log_dam_price_forecast_buffer[
+                row_start : row_start + num_rows
+            ].astype(np.float64, copy=False)
+            reward_scale = self._daily_reward_scale(dam_price_forecast=dam_price_forecast)
             da_trades = self._derive_day_ahead_trades(
                 timestamps=period_timestamps,
                 volumes=period_volumes,
@@ -405,7 +478,7 @@ class CustomPPO(PPO):
                     ):
                         effective_da_market_weight = 0.0
                     base_rewards = (
-                        effective_da_market_weight * da_market_rewards
+                        effective_da_market_weight * (da_market_rewards / reward_scale)
                     ) + invalid_penalties
                     combined_rewards = base_rewards.astype(np.float64).copy()
 
@@ -441,38 +514,97 @@ class CustomPPO(PPO):
                         combined_rewards = base_rewards.astype(np.float64).copy()
                     else:
                         for t in active:
-                            vol_cf, _clr_cf, _da_sum_cf = (
-                                self._replay_episode_replacing_action_at(
-                                    base_env,
-                                    day_str,
-                                    actions_period,
-                                    num_rows,
-                                    replace_with_idle_at=int(t),
-                                    idle_action=self.counterfactual_idle_action,
-                                )
-                            )
-                            k_cf, bh_cf, sh_cf = realized_volumes_to_schedule(vol_cf)
-                            row_cf = self._precomputed_lookup.row_for_schedule(
-                                day_str, k_cf, bh_cf, sh_cf
-                            )
-                            if row_cf is None or k_cf == "invalid":
-                                self._append_lookup_debug_row(
-                                    source="cf_replay",
-                                    day_str=day_str,
-                                    kind=k_cf,
-                                    buy_hour=bh_cf,
-                                    sell_hour=sh_cf,
-                                    replace_at=int(t),
-                                    actions=actions_period,
-                                    volumes=vol_cf,
-                                )
-                            profit_cf_eur = self._precomputed_lookup.profit_eur_for_key(
-                                day_str, k_cf, bh_cf, sh_cf, warn=True
-                            )
-                            R_cf_total = profit_cf_eur / RI_REWARD_SCALE
-                            margin_t = R_full_total - R_cf_total
-                            margins.append(margin_t)
                             ti = int(t)
+                            a_t = int(np.asarray(actions_period[ti]).item())
+
+                            if (
+                                self.buy_cf_attribution_mode == "buy_only_isolated"
+                                and a_t == 1
+                            ):
+                                actions_ref = (
+                                    np.asarray(actions_period)
+                                    .flatten()
+                                    .astype(np.int64, copy=True)
+                                )
+                                # Isolate buy-leg attribution by neutralizing sell legs.
+                                actions_ref[actions_ref == 2] = self.counterfactual_idle_action
+                                vol_ref, _clr_ref, _da_sum_ref = (
+                                    self._replay_episode_with_actions(
+                                        base_env,
+                                        day_str,
+                                        actions_ref,
+                                        num_rows,
+                                    )
+                                )
+                                k_ref, bh_ref, sh_ref = realized_volumes_to_schedule(vol_ref)
+                                profit_ref_eur = self._precomputed_lookup.profit_eur_for_key(
+                                    day_str, k_ref, bh_ref, sh_ref, warn=True
+                                )
+
+                                actions_cf = actions_ref.copy()
+                                actions_cf[ti] = self.counterfactual_idle_action
+                                vol_cf, _clr_cf, _da_sum_cf = (
+                                    self._replay_episode_with_actions(
+                                        base_env,
+                                        day_str,
+                                        actions_cf,
+                                        num_rows,
+                                    )
+                                )
+                                k_cf, bh_cf, sh_cf = realized_volumes_to_schedule(vol_cf)
+                                row_cf = self._precomputed_lookup.row_for_schedule(
+                                    day_str, k_cf, bh_cf, sh_cf
+                                )
+                                if row_cf is None or k_cf == "invalid":
+                                    self._append_lookup_debug_row(
+                                        source="cf_replay",
+                                        day_str=day_str,
+                                        kind=k_cf,
+                                        buy_hour=bh_cf,
+                                        sell_hour=sh_cf,
+                                        replace_at=ti,
+                                        actions=actions_cf,
+                                        volumes=vol_cf,
+                                    )
+                                profit_cf_eur = self._precomputed_lookup.profit_eur_for_key(
+                                    day_str, k_cf, bh_cf, sh_cf, warn=True
+                                )
+                                margin_t = (
+                                    (profit_ref_eur - profit_cf_eur) / RI_REWARD_SCALE
+                                ) / reward_scale
+                            else:
+                                vol_cf, _clr_cf, _da_sum_cf = (
+                                    self._replay_episode_replacing_action_at(
+                                        base_env,
+                                        day_str,
+                                        actions_period,
+                                        num_rows,
+                                        replace_with_idle_at=ti,
+                                        idle_action=self.counterfactual_idle_action,
+                                    )
+                                )
+                                k_cf, bh_cf, sh_cf = realized_volumes_to_schedule(vol_cf)
+                                row_cf = self._precomputed_lookup.row_for_schedule(
+                                    day_str, k_cf, bh_cf, sh_cf
+                                )
+                                if row_cf is None or k_cf == "invalid":
+                                    self._append_lookup_debug_row(
+                                        source="cf_replay",
+                                        day_str=day_str,
+                                        kind=k_cf,
+                                        buy_hour=bh_cf,
+                                        sell_hour=sh_cf,
+                                        replace_at=ti,
+                                        actions=actions_period,
+                                        volumes=vol_cf,
+                                    )
+                                profit_cf_eur = self._precomputed_lookup.profit_eur_for_key(
+                                    day_str, k_cf, bh_cf, sh_cf, warn=True
+                                )
+                                R_cf_total = profit_cf_eur / RI_REWARD_SCALE
+                                margin_t = (R_full_total - R_cf_total) / reward_scale
+
+                            margins.append(margin_t)
                             rolling_intrinsic_rewards[ti] = margin_t
                             combined_rewards[ti] = (
                                 float(base_rewards[ti])

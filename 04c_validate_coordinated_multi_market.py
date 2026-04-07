@@ -7,9 +7,14 @@ import torch
 from loguru import logger
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from src.coordinated_multi_market.learning_utils import load_input_data, prepare_input_data
-from src.coordinated_multi_market.basic_battery_dam_env import BasicBatteryDAM
-from src.coordinated_multi_market.custom_ppo import CustomPPO
+from src.coordinated_multi_market.v3_counterfactual_reward_lookup.learning_utils import (
+    load_input_data,
+    prepare_input_data,
+)
+from src.coordinated_multi_market.v3_counterfactual_reward_lookup.basic_battery_dam_env import (
+    BasicBatteryDAM,
+)
+from src.coordinated_multi_market.v3_counterfactual_reward_lookup.custom_ppo import CustomPPO
 
 # from src.coordinated_multi_market.rolling_intrinsic.new_testing_rolling_intrinsic_qh_intelligent_stacking import (
 #     simulate_days_stacked_quarterhourly_products,)
@@ -19,7 +24,7 @@ from src.coordinated_multi_market.rolling_intrinsic.testing_rolling_intrinsic_qh
 )
 
 from src.shared.config import (
-    BUCKET_SIZE,
+   BUCKET_SIZE,
     C_RATE,
     LOGGING_PATH_COORDINATED,
     MAX_CYCLES_PER_YEAR,
@@ -54,14 +59,14 @@ def _compute_series_stats(series: pd.Series):
 if __name__ == "__main__":
 
     # -------- Parameter für die Validierung --------
-    model_number = "12"
+    model_number = "1"
 
     # Start-Checkpoint, ab dem validiert werden soll
     # -> muss dem Namensschema aus dem Training entsprechen
-    start_checkpoint = "ppo_stacked_extended_checkpoint_2010000_steps"
+    start_checkpoint = "ppo_stacked_checkpoint_900000_steps"
 
     # Schrittweite der Checkpoints in "Steps"
-    STEP_INCREMENT = 10000
+    STEP_INCREMENT = 1_000_000
 
     # ------------------------------------------------
 
@@ -155,6 +160,7 @@ if __name__ == "__main__":
         input_data_val = prepare_input_data(
             df_spot_val, versioned_scaler_path, fit_scaler=False
         )
+        behaviour_rows = []
 
         for key, value in input_data_val.items():
             env = BasicBatteryDAM(
@@ -168,10 +174,28 @@ if __name__ == "__main__":
             for _ in range(24):
                 action, _ = model.predict(obs, deterministic=True)
                 obs, reward, done, info = env.step(action)
-                if done:
+                step_info = info[0]
+                behaviour_rows.append(
+                    {
+                        "time": pd.to_datetime(
+                            step_info["timestamp"], utc=True
+                        ).tz_convert("Europe/Berlin"),
+                        "capacity_trade": float(step_info["position"]),
+                        "epex_spot_60min_de_lu_eur_per_mwh": float(
+                            step_info["clearing_price"]
+                        ),
+                        "reward": float(reward[0]),
+                    }
+                )
+                if bool(done[0]):
                     obs = env.reset()
                     break
             env.close()
+
+        behaviour_path = os.path.join(ckpt_log_path, TEST_CSV_NAME)
+        if behaviour_rows:
+            df_behaviour = pd.DataFrame(behaviour_rows).sort_values("time")
+            df_behaviour.to_csv(behaviour_path, index=False)
 
         logger.info(
             "Finished RL evaluation on validation set for checkpoint %s (len(df_spot_val)=%s)"
@@ -219,7 +243,7 @@ if __name__ == "__main__":
             start_day=VAL_START,
             end_day=VAL_END,
             discount_rate=0,
-            bucket_size=BUCKET_SIZE,
+            #bucket_size=BUCKET_SIZE,
             c_rate=C_RATE,
             roundtrip_eff=RTE,
             max_cycles=MAX_CYCLES_PER_YEAR,

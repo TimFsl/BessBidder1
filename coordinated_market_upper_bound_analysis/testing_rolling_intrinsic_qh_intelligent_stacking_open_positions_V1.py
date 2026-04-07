@@ -416,16 +416,13 @@ def solve_bucket_with_persistent_model(
 
     # NEW
     # Free-sell budget:
-    # - If there are no DA trades and no DA-long inventory, fall back to the
-    #   previous, effectively non-binding behaviour: cap - r_long (cap=1.0).
-    #   This preserves the original pure-intraday RI baseline.
-    # - Otherwise (DA present), use the tight intraday-only net-long budget so that
-    #   free sells cannot silently unwind DA-long.
-    if (
-        float(r_long_remaining_mwh) <= 1e-9
-        and float(da_net_trades["net_buy"].sum()) <= 1e-9
-        and float(da_net_trades["net_sell"].sum()) <= 1e-9
-    ):
+    # - If effective DA-long inventory is (nearly) zero, fall back to an
+    #   effectively non-binding behaviour to avoid suppressing intraday
+    #   trades even when DA contains both buys and sells that cancel in
+    #   inventory terms.
+    # - Otherwise, use the tight intraday-only net-long budget so that free
+    #   sells cannot silently unwind DA-long.
+    if float(r_long_remaining_mwh) <= 1e-9:
         cap = 1.0  # must match cap used in build_battery_model
         free_mwh = max(0.0, cap - float(r_long_remaining_mwh))
         free_sell_budget_constr.RHS = float(free_mwh)
