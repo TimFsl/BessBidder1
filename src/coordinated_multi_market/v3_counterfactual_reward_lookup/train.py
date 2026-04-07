@@ -57,7 +57,7 @@ RESET_TIMESTEPS_ON_RESTART = False
 SOURCE_MODEL_NUMBER = "0"
 SOURCE_MODEL_CHECKPOINT = "ppo_stacked_checkpoint_900000_steps"
 # Target run folder (where to write logs/models/scaler for this run)
-TARGET_MODEL_NUMBER = "3"
+TARGET_MODEL_NUMBER = "6"
 
 # Override if summaries live elsewhere (default: config.PRECOMPUTED_DA_RI_SUMMARY_DIR)
 PRECOMPUTED_SUMMARY_DIR = None  # e.g. os.path.join("coordinated_market_upper_bound_analysis", "results")
@@ -171,8 +171,11 @@ if __name__ == "__main__":
         # Reward normalization across years/regimes:
         # - "none": keep current scaling
         # - "daily_iqr_forecast": divide DA-market and CF rewards by IQR of daily forecast prices
-        reward_normalization_mode="daily_iqr_forecast",
+        reward_normalization_mode="none",
         reward_normalization_min_scale=1.0,
+        # Multiply the IQR divisor by this factor. Values < 1.0 increase rewards.
+        # Example: 0.1 => ~10x larger rewards; 0.02 => ~50x larger rewards.
+        reward_normalization_scale_multiplier=0.01,
     )
 
     if RESUME_TRAINING:

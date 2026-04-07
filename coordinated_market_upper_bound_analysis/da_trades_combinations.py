@@ -23,11 +23,12 @@ def generate_da_combinations() -> List[DACombo]:
     combos.append(DACombo(combo_id=0, kind="no_da"))
     cid = 1
 
+    
     # buy only (1..23)
     for b in range(1, 24):
         combos.append(DACombo(cid, "buy_only", buy_hour=b))
         cid += 1
-
+    
     # buy -> sell (1<=b<s<=24)
     for b in range(1, 25):
         for s in range(b + 1, 25):

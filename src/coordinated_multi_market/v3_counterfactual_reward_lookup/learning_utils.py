@@ -1,10 +1,11 @@
-import torch.nn as nn
+import os
+from typing import Tuple
+
 import joblib
 import numpy as np
 import pandas as pd
-import os
+import torch.nn as nn
 from sklearn.preprocessing import MinMaxScaler
-from typing import Tuple
 
 from src.shared.config import (
     DATA_START,
@@ -34,6 +35,86 @@ if isinstance(DA_PRICE_FORECAST_COLUMN, tuple):
 train_start = DATA_START.date().isoformat()
 train_end = DATA_END.date().isoformat()
 path = f"df_spot_train_{train_start}_{train_end}_with_features_utc.csv"
+
+# Columns required for each day row in prepare_input_data (shape (24, len)).
+_PREPARE_DAY_COLS = [
+    "epex_spot_60min_de_lu_eur_per_mwh",
+    "exaa_15min_de_lu_eur_per_mwh",
+    "load_forecast_d_minus_1_1000_total_de_lu_mw",
+    "pv_forecast_d_minus_1_1000_de_lu_mw",
+    "wind_offshore_forecast_d_minus_1_1000_de_lu_mw",
+    "wind_onshore_forecast_d_minus_1_1000_de_lu_mw",
+    "date_month",
+    "day_of_week",
+    "wind_forecast_daily_mean",
+    "wind_forecast_daily_std",
+    "spread_id_full_da_qh_mean",
+    "spread_id_full_da_qh_std",
+    "spread_id_full_da_qh_min",
+    "spread_id_full_da_qh_max",
+    "exaa_pf_daily_mean",
+    "exaa_pf_daily_std",
+    "exaa_pf_daily_min",
+    "exaa_pf_daily_max",
+    "exaa_pf_daily_spread",
+    "exaa_pf_daily_diff_sum",
+    "exaa_pf_daily_diff_max",
+]
+
+
+def _berlin_day_bounds(day) -> tuple[pd.Timestamp, pd.Timestamp]:
+    d = pd.Timestamp(day).date()
+    start = pd.Timestamp(d).tz_localize("Europe/Berlin")
+    end = start + pd.Timedelta(days=1)
+    return start, end
+
+
+def _interpolate_day_to_24(
+    sub: pd.DataFrame, full_idx: pd.DatetimeIndex
+) -> pd.DataFrame | None:
+    """Reindex to 24 hourly stamps; fill gaps (DST / gaps) with time/interpolation."""
+    out = sub.reindex(full_idx)
+    # Time-aware interpolation along the hour index
+    num_cols = out.select_dtypes(include=[np.number]).columns
+    if len(num_cols):
+        out[num_cols] = out[num_cols].interpolate(
+            method="time", limit_direction="both"
+        )
+    out = out.ffill().bfill()
+    if out[_PREPARE_DAY_COLS].isna().any().any():
+        out[_PREPARE_DAY_COLS] = out[_PREPARE_DAY_COLS].ffill(axis=0).bfill(axis=0)
+    if out[_PREPARE_DAY_COLS].isna().any().any():
+        return None
+    return out
+
+
+def _berlin_calendar_day_slice(df: pd.DataFrame, day) -> pd.DataFrame | None:
+    """
+    One calendar day in Europe/Berlin as 24 hourly rows for the battery env.
+
+    Uses ``[start, start+1d)`` in local time (not ``df.loc[iso]``) so the last hour
+    before midnight is included consistently. Short DST days (23 rows) are reindexed
+    to 24 hourly stamps (``periods=24, freq='1h'``) with forward/backward fill.
+    """
+    start, end = _berlin_day_bounds(day)
+    full_idx = pd.date_range(start, periods=24, freq="1h", tz="Europe/Berlin")
+    sub = df.loc[(df.index >= start) & (df.index < end)].copy()
+    if len(sub) == 0:
+        return None
+    sub.index = pd.to_datetime(sub.index).tz_convert("Europe/Berlin")
+    sub = sub[~sub.index.duplicated(keep="last")]
+    if len(sub) == 24:
+        return sub
+    if len(sub) == 23:
+        return _interpolate_day_to_24(sub, full_idx)
+    if len(sub) == 25:
+        sub = sub[~sub.index.duplicated(keep="first")]
+        if len(sub) == 24:
+            return sub
+        return _interpolate_day_to_24(sub, full_idx)
+    # Irregular length (e.g. gaps): align to 24 delivery hours
+    return _interpolate_day_to_24(sub, full_idx)
+
 
 def split_df_by_date(
     df: pd.DataFrame,
@@ -166,89 +247,118 @@ def prepare_input_data(
 
     input_dict = {}
     days = np.unique(df.index.date)
+    skipped: list[tuple[str, str]] = []
     for day in days:
-        if df.loc[day.isoformat()][
-            [
-                "epex_spot_60min_de_lu_eur_per_mwh",
-                "exaa_15min_de_lu_eur_per_mwh",
-                "load_forecast_d_minus_1_1000_total_de_lu_mw",
-                "pv_forecast_d_minus_1_1000_de_lu_mw",
-                "wind_offshore_forecast_d_minus_1_1000_de_lu_mw",
-                "wind_onshore_forecast_d_minus_1_1000_de_lu_mw",
-                "date_month",
-                "day_of_week",
-                "wind_forecast_daily_mean",
-                "wind_forecast_daily_std",
-                "spread_id_full_da_qh_mean",
-                "spread_id_full_da_qh_std",
-                "spread_id_full_da_qh_min",
-                "spread_id_full_da_qh_max",
-                "exaa_pf_daily_mean",
-                "exaa_pf_daily_std",
-                "exaa_pf_daily_min",
-                "exaa_pf_daily_max",
-                "exaa_pf_daily_spread",
-                "exaa_pf_daily_diff_sum",
-                "exaa_pf_daily_diff_max",
-            ]
-        ].isna().any().any() or df.loc[day.isoformat()][
-            [
-                "epex_spot_60min_de_lu_eur_per_mwh",
-                "exaa_15min_de_lu_eur_per_mwh",
-                "load_forecast_d_minus_1_1000_total_de_lu_mw",
-                "pv_forecast_d_minus_1_1000_de_lu_mw",
-                "wind_offshore_forecast_d_minus_1_1000_de_lu_mw",
-                "wind_onshore_forecast_d_minus_1_1000_de_lu_mw",
-                "date_month",
-                "day_of_week",
-                "wind_forecast_daily_mean",
-                "wind_forecast_daily_std",
-                "spread_id_full_da_qh_mean",
-                "spread_id_full_da_qh_std",
-                "spread_id_full_da_qh_min",
-                "spread_id_full_da_qh_max",
-                "exaa_pf_daily_mean",
-                "exaa_pf_daily_std",
-                "exaa_pf_daily_min",
-                "exaa_pf_daily_max",
-                "exaa_pf_daily_spread",
-                "exaa_pf_daily_diff_sum",
-                "exaa_pf_daily_diff_max",
-            ]
-        ].shape != (
-            24,
-            21,
-        ):
+        start, end = _berlin_day_bounds(day)
+        raw_n = int(len(df.loc[(df.index >= start) & (df.index < end)]))
+        if raw_n == 0:
+            skipped.append((str(day), "no_rows_in_berlin_day"))
+            continue
+        sub = _berlin_calendar_day_slice(df, day)
+        if sub is None:
+            skipped.append((str(day), f"could_not_align_24h_raw_n={raw_n}"))
+            continue
+        feat = sub[_PREPARE_DAY_COLS]
+        if feat.isna().any().any() or feat.shape != (24, 21):
+            nan_cols = (
+                feat.columns[feat.isna().any()].tolist() if feat.isna().any().any() else []
+            )
+            skipped.append(
+                (
+                    str(day),
+                    f"nan_or_bad_shape_shape={feat.shape}_nan_cols={nan_cols}",
+                )
+            )
             continue
 
+        day_key = day.isoformat() if hasattr(day, "isoformat") else str(day)
         input_dict.update(
             {
-                day.isoformat(): {
-                    "price_forecast": np.array(df.loc[day.isoformat()][DA_PRICE_FORECAST_COLUMN].astype(np.float32).values),
-                    "price_realized": np.array(df.loc[day.isoformat()]["epex_spot_60min_de_lu_eur_per_mwh"].astype(np.float32).values),
-                    "pv_forecast_d_minus_1_1000_de_lu_mw": np.array(df.loc[day.isoformat()]["pv_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values),
-                    "wind_onshore_forecast_d_minus_1_1000_de_lu_mw": np.array(df.loc[day.isoformat()]["wind_onshore_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values),
-                    "wind_offshore_forecast_d_minus_1_1000_de_lu_mw": np.array(df.loc[day.isoformat()]["wind_offshore_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values),
-                    "load_forecast_d_minus_1_1000_total_de_lu_mw": np.array(df.loc[day.isoformat()]["load_forecast_d_minus_1_1000_total_de_lu_mw"].astype(np.float32).values),
-                    "date_month": np.array(df.loc[day.isoformat()]["date_month"].astype(np.float32).values),
-                    "day_of_week": np.array(df.loc[day.isoformat()]["day_of_week"].astype(np.float32).values),
-                    "wind_forecast_daily_mean": np.array(df.loc[day.isoformat()]["wind_forecast_daily_mean"].astype(np.float32).values),
-                    "wind_forecast_daily_std": np.array(df.loc[day.isoformat()]["wind_forecast_daily_std"].astype(np.float32).values),
-                    "spread_id_full_da_mean": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_mean"].astype(np.float32).values),
-                    "spread_id_full_da_std": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_std"].astype(np.float32).values),
-                    "spread_id_full_da_min": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_min"].astype(np.float32).values),
-                    "spread_id_full_da_max": np.array(df.loc[day.isoformat()]["spread_id_full_da_qh_max"].astype(np.float32).values),
-                    "exaa_pf_daily_mean": np.array(df.loc[day.isoformat()]["exaa_pf_daily_mean"].astype(np.float32).values),
-                    "exaa_pf_daily_std": np.array(df.loc[day.isoformat()]["exaa_pf_daily_std"].astype(np.float32).values),
-                    "exaa_pf_daily_min": np.array(df.loc[day.isoformat()]["exaa_pf_daily_min"].astype(np.float32).values),
-                    "exaa_pf_daily_max": np.array(df.loc[day.isoformat()]["exaa_pf_daily_max"].astype(np.float32).values),
-                    "exaa_pf_daily_spread": np.array(df.loc[day.isoformat()]["exaa_pf_daily_spread"].astype(np.float32).values),
-                    "exaa_pf_daily_diff_sum": np.array(df.loc[day.isoformat()]["exaa_pf_daily_diff_sum"].astype(np.float32).values),
-                    "exaa_pf_daily_diff_max": np.array(df.loc[day.isoformat()]["exaa_pf_daily_diff_max"].astype(np.float32).values),
-                    "timestamps": np.array(df.loc[day.isoformat()].index.values),
+                day_key: {
+                    "price_forecast": np.array(
+                        sub[DA_PRICE_FORECAST_COLUMN].astype(np.float32).values
+                    ),
+                    "price_realized": np.array(
+                        sub["epex_spot_60min_de_lu_eur_per_mwh"].astype(np.float32).values
+                    ),
+                    "pv_forecast_d_minus_1_1000_de_lu_mw": np.array(
+                        sub["pv_forecast_d_minus_1_1000_de_lu_mw"].astype(np.float32).values
+                    ),
+                    "wind_onshore_forecast_d_minus_1_1000_de_lu_mw": np.array(
+                        sub["wind_onshore_forecast_d_minus_1_1000_de_lu_mw"].astype(
+                            np.float32
+                        ).values
+                    ),
+                    "wind_offshore_forecast_d_minus_1_1000_de_lu_mw": np.array(
+                        sub["wind_offshore_forecast_d_minus_1_1000_de_lu_mw"].astype(
+                            np.float32
+                        ).values
+                    ),
+                    "load_forecast_d_minus_1_1000_total_de_lu_mw": np.array(
+                        sub["load_forecast_d_minus_1_1000_total_de_lu_mw"].astype(
+                            np.float32
+                        ).values
+                    ),
+                    "date_month": np.array(sub["date_month"].astype(np.float32).values),
+                    "day_of_week": np.array(sub["day_of_week"].astype(np.float32).values),
+                    "wind_forecast_daily_mean": np.array(
+                        sub["wind_forecast_daily_mean"].astype(np.float32).values
+                    ),
+                    "wind_forecast_daily_std": np.array(
+                        sub["wind_forecast_daily_std"].astype(np.float32).values
+                    ),
+                    "spread_id_full_da_mean": np.array(
+                        sub["spread_id_full_da_qh_mean"].astype(np.float32).values
+                    ),
+                    "spread_id_full_da_std": np.array(
+                        sub["spread_id_full_da_qh_std"].astype(np.float32).values
+                    ),
+                    "spread_id_full_da_min": np.array(
+                        sub["spread_id_full_da_qh_min"].astype(np.float32).values
+                    ),
+                    "spread_id_full_da_max": np.array(
+                        sub["spread_id_full_da_qh_max"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_mean": np.array(
+                        sub["exaa_pf_daily_mean"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_std": np.array(
+                        sub["exaa_pf_daily_std"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_min": np.array(
+                        sub["exaa_pf_daily_min"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_max": np.array(
+                        sub["exaa_pf_daily_max"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_spread": np.array(
+                        sub["exaa_pf_daily_spread"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_diff_sum": np.array(
+                        sub["exaa_pf_daily_diff_sum"].astype(np.float32).values
+                    ),
+                    "exaa_pf_daily_diff_max": np.array(
+                        sub["exaa_pf_daily_diff_max"].astype(np.float32).values
+                    ),
+                    "timestamps": np.array(sub.index.values),
                 }
             }
         )
+    if skipped:
+        skip_path = os.path.join(
+            versioned_scaler_path, "prepare_input_data_skipped_days.txt"
+        )
+        try:
+            os.makedirs(versioned_scaler_path, exist_ok=True)
+            with open(skip_path, "w", encoding="utf-8") as sf:
+                for d, reason in skipped:
+                    sf.write(f"{d}\t{reason}\n")
+            print(
+                f"[prepare_input_data] skipped {len(skipped)} day(s); "
+                f"wrote {skip_path}"
+            )
+        except OSError as e:
+            print(f"[prepare_input_data] could not write skipped-days file: {e}")
     return input_dict
 
 

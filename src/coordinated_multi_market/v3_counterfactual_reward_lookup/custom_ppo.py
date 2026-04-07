@@ -32,8 +32,8 @@ DEFAULT_IDLE_DA_ACTION = 0
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
 CURRICULUM_MAX_CYCLES = [
-    (300_000, 1.0),
-    (600_000, 1.0),
+    (300_000, 3.0),
+    (600_000, 2.0),
     (900_000, 1.0),
     (float("inf"), 1.0),
 ]
@@ -59,6 +59,7 @@ class CustomPPO(PPO):
         buy_cf_attribution_mode: str = "contextual",
         reward_normalization_mode: str = "none",
         reward_normalization_min_scale: float = 1.0,
+        reward_normalization_scale_multiplier: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -82,6 +83,9 @@ class CustomPPO(PPO):
         self.buy_cf_attribution_mode = str(buy_cf_attribution_mode)
         self.reward_normalization_mode = str(reward_normalization_mode)
         self.reward_normalization_min_scale = float(reward_normalization_min_scale)
+        self.reward_normalization_scale_multiplier = float(
+            reward_normalization_scale_multiplier
+        )
 
     def _daily_reward_scale(
         self, *, dam_price_forecast: np.ndarray
@@ -102,7 +106,14 @@ class CustomPPO(PPO):
             s = q75 - q25
             if not np.isfinite(s):
                 s = 1.0
-            return float(max(s, self.reward_normalization_min_scale))
+            s = float(max(s, self.reward_normalization_min_scale))
+            m = float(self.reward_normalization_scale_multiplier)
+            if not np.isfinite(m) or m <= 0:
+                raise ValueError(
+                    "reward_normalization_scale_multiplier must be finite and > 0, "
+                    f"got {m!r}"
+                )
+            return float(s * m)
         raise ValueError(
             "reward_normalization_mode must be 'none' or 'daily_iqr_forecast', got "
             f"{mode!r}"

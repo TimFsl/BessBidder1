@@ -140,6 +140,7 @@ merged_df = run_build_idfull_and_merge(
 # You can adjust bucket size and min trades as needed
 # Matrices are required for Rolling Intrinsic Algortihm
 
+"""
 precompute_range(
         start_day=DATA_START,
         end_day=DATA_END,
@@ -147,3 +148,4 @@ precompute_range(
         min_trades=MIN_TRADES,
         output_path=PRECOMPUTED_VWAP_PATH,
     )
+"""

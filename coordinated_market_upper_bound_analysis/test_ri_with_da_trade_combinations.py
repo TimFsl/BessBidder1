@@ -151,10 +151,10 @@ def run_ri_with_synthetic_da_trades(
 
 if __name__ == "__main__":
     run_ri_with_synthetic_da_trades(
-        da_prices_path="data/data_2019-01-01_2024-12-31_hourly.csv",
+        da_prices_path="data/data_2019-01-01_2025-12-31_hourly.csv",
         output_path="coordinated_market_upper_bound_analysis/results/",
-        start_day=pd.Timestamp("2022-12-23", tz="Europe/Berlin"),
-        end_day=pd.Timestamp("2023-12-31", tz="Europe/Berlin"),
+        start_day=pd.Timestamp("2025-04-16", tz="Europe/Berlin"),
+        end_day=pd.Timestamp("2025-12-31", tz="Europe/Berlin"),
         discount_rate=0.0,
         c_rate=1.0,
         roundtrip_eff=0.86,
