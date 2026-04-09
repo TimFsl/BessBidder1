@@ -34,7 +34,7 @@ DEFAULT_IDLE_DA_ACTION = 0
 CURRICULUM_MAX_CYCLES = [
     (300_000, 3.0),
     (600_000, 2.0),
-    (900_000, 1.0),
+    (1_000_000, 1.0),
     (float("inf"), 1.0),
 ]
 

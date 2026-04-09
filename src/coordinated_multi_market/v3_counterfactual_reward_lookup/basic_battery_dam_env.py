@@ -72,7 +72,7 @@ class BasicBatteryDAM(gym.Env):
         sin_month = np.sin(2 * np.pi * self._date_month / 12)
         cos_month = np.cos(2 * np.pi * self._date_month / 12)
 
-        return np.concatenate(
+        obs = np.concatenate(
             (
                 self._realized_quantity_t_minus_1,
                 self._current_soc,
@@ -111,6 +111,10 @@ class BasicBatteryDAM(gym.Env):
             axis=None,
             dtype=np.float32,
         )
+        # Some components (e.g. residual load, deltas) are derived via subtraction/diffs
+        # and can exceed [-1, 1] depending on the scaler fit range. The observation_space
+        # is defined as Box(-1, 1), so we clip defensively to keep SB3 env checks stable.
+        return np.clip(obs, -1.0, 1.0).astype(np.float32)
 
     def reset(
         self,

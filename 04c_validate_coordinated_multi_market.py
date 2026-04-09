@@ -33,8 +33,6 @@ from src.shared.config import (
     RTE,
     SCALER_OUTPUT_PATH_COORDINATED,
     TEST_CSV_NAME,
-    VAL_START,
-    VAL_END,
 )
 
 
@@ -240,8 +238,11 @@ if __name__ == "__main__":
         simulate_days_stacked_quarterhourly_products(
             da_bids_path=behaviour_path,
             output_path=ri_qh_output_path_val,
-            start_day=VAL_START,
-            end_day=VAL_END,
+            start_day=df_spot_val.index.min().tz_convert("Europe/Berlin").normalize(),
+            end_day=(
+                df_spot_val.index.max().tz_convert("Europe/Berlin").normalize()
+                + pd.Timedelta(days=1)
+            ),
             discount_rate=0,
             #bucket_size=BUCKET_SIZE,
             c_rate=C_RATE,

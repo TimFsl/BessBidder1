@@ -19,7 +19,12 @@ from src.shared.config import (
     DATA_PATH,
     PROBLEMATIC_DATES,
     DA_PRICE_FORECAST_COLUMN,
+    VAL_SPLIT_MODE,
+    VAL_HOLDOUT_UNIT,
+    VAL_HOLDOUT_N,
+    VAL_HOLDOUT_SEED,
 )
+from src.shared.validation_split import random_holdout_from_train
 
 if isinstance(DA_PRICE_FORECAST_COLUMN, tuple):
     if len(DA_PRICE_FORECAST_COLUMN) != 1 or not isinstance(
@@ -167,6 +172,19 @@ def load_input_data(write_test: bool = False):
 
     # Apply time periods
     df_spot_train, df_spot_val, df_spot_test = split_df_by_date(df)
+
+    # Optional: override contiguous validation with random in-sample holdout.
+    if VAL_SPLIT_MODE == "random_holdout_from_train":
+        split = random_holdout_from_train(
+            df=df,
+            train_start=TRAIN_START,
+            train_end=TRAIN_END,
+            holdout_unit=VAL_HOLDOUT_UNIT,
+            holdout_n=int(VAL_HOLDOUT_N),
+            seed=int(VAL_HOLDOUT_SEED),
+        )
+        df_spot_train = split.df_train
+        df_spot_val = split.df_val
 
     # Optional: Write test data to CSV (e.g., for further analysis)
     if write_test:
