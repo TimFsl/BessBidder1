@@ -711,13 +711,28 @@ def simulate_days_stacked_quarterhourly_products(
 
     # DRL day-ahead bids
     drl_output = pd.read_csv(da_bids_path, index_col="time", parse_dates=True)
-    drl_output.index = drl_output.index.tz_convert("Europe/Berlin")
+    # Ensure robust datetime parsing even with mixed offsets (+01:00 / +02:00).
+    # `utc=True` normalizes all rows first, then we convert to Berlin time.
+    idx = pd.to_datetime(drl_output.index, errors="coerce", utc=True)
+    idx = pd.DatetimeIndex(idx).tz_convert("Europe/Berlin")
+    drl_output.index = idx
+    if drl_output.index.isna().any():
+        bad = int(drl_output.index.isna().sum())
+        raise ValueError(
+            f"{da_bids_path}: {bad} row(s) have unparseable 'time' index after read_csv."
+        )
 
     efficiency = roundtrip_eff ** 0.5  # for cycle tracking
 
     while current_day < end_day:
         current_day = current_day.replace(hour=0, minute=0, second=0, microsecond=0)
         logger.info(f"Current delivery day: {current_day}")
+
+        # Must be defined before any get_net_trades(..., trading_end) call below.
+        trading_start = current_day - pd.Timedelta(hours=8)
+        trading_end = current_day + pd.Timedelta(days=1)
+        logger.info(f"Trading start: {trading_start}")
+        logger.info(f"Trading end:   {trading_end}")
 
         all_trades = pd.DataFrame(
             columns=["execution_time", "side", "quantity", "price", "product", "profit"]
@@ -789,12 +804,6 @@ def simulate_days_stacked_quarterhourly_products(
                 ),
                 trading_end,
             )
-
-        trading_start = current_day - pd.Timedelta(hours=8)
-        trading_end = current_day + pd.Timedelta(days=1)
-
-        logger.info(f"Trading start: {trading_start}")
-        logger.info(f"Trading end:   {trading_end}")
 
         # Battery time index (delivery quarter-hours)
         start_of_day = trading_end - pd.Timedelta(hours=2)

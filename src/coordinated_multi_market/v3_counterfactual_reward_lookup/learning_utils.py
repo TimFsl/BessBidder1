@@ -164,9 +164,17 @@ def load_input_data(write_test: bool = False):
         index_col=0,
         parse_dates=True,
     )
+    # Ensure Berlin-local timestamps before day-based filtering/splitting.
+    # The CSV is typically stored in UTC; converting first avoids off-by-one-day
+    # issues when filtering by calendar date (e.g. problematic RI days).
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("utc").tz_convert("Europe/Berlin")
+    else:
+        df.index = df.index.tz_convert("Europe/Berlin")
+
     # Remove problematic dates
     if PROBLEMATIC_DATES:
-        mask_bad = df.index.date.astype("O")
+        mask_bad = df.index.date.astype("O")  # Berlin calendar date
         df = df[~pd.Series(mask_bad, index=df.index).isin(PROBLEMATIC_DATES)]
 
 

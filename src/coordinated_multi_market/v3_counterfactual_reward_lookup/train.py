@@ -13,6 +13,7 @@ This script:
 import os
 import warnings
 
+import shutil
 from sklearn.externals.array_api_compat.numpy import False_
 import torch
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -46,7 +47,7 @@ from src.shared.config import (
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
-RESUME_TRAINING = False
+RESUME_TRAINING = True
 # If True together with RESUME_TRAINING, initialize a fresh model with the
 # hyperparameters below and load policy weights from SOURCE_MODEL_CHECKPOINT.
 RESUME_WITH_NEW_HYPERPARAMS = True
@@ -54,10 +55,10 @@ RESUME_WITH_NEW_HYPERPARAMS = True
 RESET_TIMESTEPS_ON_RESTART = False
 
 # Source checkpoint (where to load pretrained weights from)
-SOURCE_MODEL_NUMBER = "0"
-SOURCE_MODEL_CHECKPOINT = "ppo_stacked_checkpoint_900000_steps"
+SOURCE_MODEL_NUMBER = "4"
+SOURCE_MODEL_CHECKPOINT = "ppo_stacked_checkpoint_1000000_steps"
 # Target run folder (where to write logs/models/scaler for this run)
-TARGET_MODEL_NUMBER = "6"
+TARGET_MODEL_NUMBER = "5"
 
 # Override if summaries live elsewhere (default: config.PRECOMPUTED_DA_RI_SUMMARY_DIR)
 PRECOMPUTED_SUMMARY_DIR = None  # e.g. os.path.join("coordinated_market_upper_bound_analysis", "results")
@@ -112,6 +113,18 @@ if __name__ == "__main__":
     scaler_input_path = (
         source_scaler_path if RESUME_TRAINING and source_scaler_path else versioned_scaler_path
     )
+    # If we resume using a pretrained scaler, copy it into the target run folder
+    # so validation/test can always find versioned_scaler_path/scaler.pkl.
+    if RESUME_TRAINING and source_scaler_path and source_scaler_path != versioned_scaler_path:
+        src_scaler = os.path.join(source_scaler_path, "scaler.pkl")
+        dst_scaler = os.path.join(versioned_scaler_path, "scaler.pkl")
+        if os.path.exists(src_scaler) and not os.path.exists(dst_scaler):
+            shutil.copy2(src_scaler, dst_scaler)
+        # also copy the optional skipped-days debug file if present
+        src_skipped = os.path.join(source_scaler_path, "prepare_input_data_skipped_days.txt")
+        dst_skipped = os.path.join(versioned_scaler_path, "prepare_input_data_skipped_days.txt")
+        if os.path.exists(src_skipped) and not os.path.exists(dst_skipped):
+            shutil.copy2(src_skipped, dst_skipped)
     input_data_train = prepare_input_data(
         df_spot_train,
         scaler_input_path,

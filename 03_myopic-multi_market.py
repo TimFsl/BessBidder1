@@ -65,7 +65,7 @@ if __name__ == "__main__":
         #threshold=0,
         #threshold_abs_min=0,
         discount_rate=0,
-        bucket_size=BUCKET_SIZE,
+        #bucket_size=BUCKET_SIZE,
         c_rate=C_RATE,
         roundtrip_eff=RTE,
         max_cycles=MAX_CYCLES_PER_YEAR,

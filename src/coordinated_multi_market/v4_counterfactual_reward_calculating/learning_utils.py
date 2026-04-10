@@ -25,16 +25,6 @@ from src.shared.config import (
 )
 from src.shared.validation_split import random_holdout_from_train
 
-if isinstance(DA_PRICE_FORECAST_COLUMN, tuple):
-    if len(DA_PRICE_FORECAST_COLUMN) != 1 or not isinstance(
-        DA_PRICE_FORECAST_COLUMN[0], str
-    ):
-        raise ValueError(
-            "DA_PRICE_FORECAST_COLUMN must be a string column name "
-            "(or single-item tuple due to accidental trailing comma)."
-        )
-    DA_PRICE_FORECAST_COLUMN = DA_PRICE_FORECAST_COLUMN[0]
-
 
 train_start = DATA_START.date().isoformat()
 train_end = DATA_END.date().isoformat()
@@ -84,8 +74,6 @@ def load_input_data(write_test: bool = False):
         parse_dates=True,
     )
     # Ensure Berlin-local timestamps before day-based filtering/splitting.
-    # The CSV is typically stored in UTC; converting first avoids off-by-one-day
-    # issues when filtering by calendar date (e.g. problematic RI days).
     if df.index.tz is None:
         df.index = df.index.tz_localize("utc").tz_convert("Europe/Berlin")
     else:

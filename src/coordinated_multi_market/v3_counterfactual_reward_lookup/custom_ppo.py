@@ -32,9 +32,9 @@ DEFAULT_IDLE_DA_ACTION = 0
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
 CURRICULUM_MAX_CYCLES = [
-    (300_000, 3.0),
-    (600_000, 2.0),
-    (1_000_000, 1.0),
+   # (300_000, 3.0),
+    # (600_000, 2.0),
+    #(1_000_000, 1.0),
     (float("inf"), 1.0),
 ]
 

@@ -73,9 +73,15 @@ def load_input_data(write_test: bool = False):
         index_col=0,
         parse_dates=True,
     )
+    # Ensure Berlin-local timestamps before day-based filtering/splitting.
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("utc").tz_convert("Europe/Berlin")
+    else:
+        df.index = df.index.tz_convert("Europe/Berlin")
+
     # Remove problematic dates
     if PROBLEMATIC_DATES:
-        mask_bad = df.index.date.astype("O")
+        mask_bad = df.index.date.astype("O")  # Berlin calendar date
         df = df[~pd.Series(mask_bad, index=df.index).isin(PROBLEMATIC_DATES)]
 
 
