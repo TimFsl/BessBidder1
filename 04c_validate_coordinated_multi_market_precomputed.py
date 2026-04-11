@@ -186,7 +186,7 @@ def _build_da_schedule_table(df_behaviour: pd.DataFrame) -> pd.DataFrame:
 
 if __name__ == "__main__":
     # -------- Same knobs as 04c_validate_coordinated_multi_market.py --------
-    model_number = "1"
+    model_number = "0"
     start_checkpoint = "ppo_stacked_checkpoint_100000_steps"
     STEP_INCREMENT = 100_000
 

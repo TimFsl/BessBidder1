@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +27,14 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from src.shared.config import RTE  # round-trip efficiency
+
+# Mean lines: first two palette entries; bands: last two (user-specified hex).
+SOC_PLOT_COLORS = {
+    "mean_da": "#5EBEC4",
+    "mean_actual": "#F92C85",
+    "fill_da":"#9CD4D8",
+    "fill_actual": "#F67EB7",
+}
 
 
 def trades_dir_next_to_profit(profit_csv: Path | str) -> Path:
@@ -167,11 +176,85 @@ def build_soc_profile_matrix(
     return pd.DataFrame(mat, index=pd.DatetimeIndex(idx, name="delivery_day"), columns=cols)
 
 
+def single_market_trades_file(
+    delivery_day: pd.Timestamp,
+    *,
+    repo_root: Path | None = None,
+    bs_folder: str = "bs15cr1rto0.86mc365mt10",
+) -> Path | None:
+    """
+    Resolve ``trades_YYYY-MM-DD.csv`` under ``qh/<year>/`` (or any ``qh/*`` fallback).
+    Single-market RI stores outputs per calendar year.
+    """
+    root = repo_root or _REPO
+    qh_root = root / "output/single_market/rolling_intrinsic/ri_basic/qh"
+    dd = pd.Timestamp(delivery_day).tz_convert("Europe/Berlin").normalize()
+    iso = dd.date().isoformat()
+    year_first = qh_root / str(dd.year) / bs_folder / "trades" / f"trades_{iso}.csv"
+    if year_first.is_file():
+        return year_first
+    if qh_root.is_dir():
+        for sub in sorted(qh_root.iterdir()):
+            if not sub.is_dir():
+                continue
+            cand = sub / bs_folder / "trades" / f"trades_{iso}.csv"
+            if cand.is_file():
+                return cand
+    return None
+
+
+def build_soc_profile_matrix_resolved(
+    delivery_days: pd.Series | list | np.ndarray,
+    trades_file_for_day: Callable[[pd.Timestamp], Path | None],
+    *,
+    mode: Literal["all", "da_only"] = "all",
+    on_missing: str = "warn",
+    **soc_kw,
+) -> pd.DataFrame:
+    """Like :func:`build_soc_profile_matrix` but paths come from a per-day resolver."""
+    rows: list[np.ndarray] = []
+    idx: list[pd.Timestamp] = []
+
+    for d in delivery_days:
+        dd = pd.Timestamp(d).tz_convert("Europe/Berlin").normalize()
+        fp = trades_file_for_day(dd)
+        if fp is None or not fp.is_file():
+            msg = f"Missing single-market trades file for {dd.date()}"
+            if on_missing == "raise":
+                raise FileNotFoundError(msg)
+            if on_missing == "warn":
+                warnings.warn(msg, stacklevel=2)
+            continue
+        soc = soc_profile_for_trades_file(fp, mode=mode, **soc_kw)
+        rows.append(soc)
+        idx.append(dd)
+
+    if not rows:
+        cols = [f"slot_{i:02d}" for i in range(96)]
+        return pd.DataFrame(columns=cols)
+
+    mat = np.vstack(rows)
+    cols = [f"slot_{i:02d}" for i in range(96)]
+    return pd.DataFrame(mat, index=pd.DatetimeIndex(idx, name="delivery_day"), columns=cols)
+
+
+def format_quantile_band_label(q_low: float, q_high: float) -> str:
+    """Human-readable range for legends, e.g. ``q25–q75`` or ``q5–q95``."""
+
+    def pct_part(q: float) -> str:
+        p = q * 100.0
+        if abs(p - round(p)) < 1e-6:
+            return str(int(round(p)))
+        return f"{p:g}"
+
+    return f"q{pct_part(q_low)}–q{pct_part(q_high)}"
+
+
 def summarize_soc_across_days(
     mat: pd.DataFrame,
     *,
-    q_low: float = 0.10,
-    q_high: float = 0.90,
+    q_low: float = 0.25,
+    q_high: float = 0.75,
 ) -> pd.DataFrame:
     """Per-slot mean and quantiles across days (rows of ``mat``)."""
     h = delivery_hours_slot_centers()
@@ -195,50 +278,212 @@ def plot_mean_quantile_soc(
     summary_da: pd.DataFrame,
     summary_all: pd.DataFrame,
     *,
+    plot_da: bool = True,
     title: str | None = None,
-    q_low: float = 0.10,
-    q_high: float = 0.90,
+    q_low: float = 0.25,
+    q_high: float = 0.75,
+    colors: dict[str, str] | None = None,
+    band_alpha: float = 0.35,
     ax: plt.Axes | None = None,
     figsize: tuple[float, float] = (10, 4.5),
+    swap_axes: bool = False,
+    show_grid: bool = True,
+    axis_labelsize: float | None = None,
+    tick_labelsize: float | None = None,
+    legend_fontsize: float | None = None,
+    show_legend: bool = True,
 ):
     """
-    One axes: DA-only vs actual (all trades) mean lines + quantile bands.
+    One axes: optional DA-only vs actual (all trades) mean lines + quantile bands.
 
-    Returns ``(figure_or_none, ax)`` — figure is ``None`` if ``ax`` was passed in.
+    If ``plot_da=False`` (e.g. single-market RI with no DA trades), only the
+    **actual** trajectory band + mean are drawn (same colours as coordinated “Actual”).
+
+    If ``swap_axes=True``, **x** = State of charge (MWh), **y** = delivery hour (with
+    ``00:00``… tick labels on the vertical axis).
     """
+    c = colors if colors is not None else SOC_PLOT_COLORS
+    qlab = format_quantile_band_label(q_low, q_high)
+
     created_fig = ax is None
     if created_fig:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = None
 
-    h = summary_da["hour"].to_numpy()
+    h = summary_all["hour"].to_numpy()
 
-    ax.fill_between(
-        h,
-        summary_da["q_low"],
-        summary_da["q_high"],
-        alpha=0.25,
-        color="C0",
-        label=f"DA SoC q{q_low:.0%}–q{q_high:.0%}",
-    )
-    ax.plot(h, summary_da["mean"], color="C0", lw=2, label="DA SoC mean")
+    def _soc_xlim_pad(*series) -> tuple[float, float]:
+        xs = np.concatenate(
+            [np.asarray(s, dtype=float).ravel() for s in series if s is not None]
+        )
+        xs = xs[np.isfinite(xs)]
+        if xs.size == 0:
+            return 0.0, 1.0
+        lo, hi = float(np.nanmin(xs)), float(np.nanmax(xs))
+        pad = 0.05 * (hi - lo) if hi > lo else 0.05
+        return lo - pad, hi + pad
 
-    ax.fill_between(
-        h,
-        summary_all["q_low"],
-        summary_all["q_high"],
-        alpha=0.25,
-        color="C1",
-        label=f"Actual SoC q{q_low:.0%}–q{q_high:.0%}",
-    )
-    ax.plot(h, summary_all["mean"], color="C1", lw=2, label="Actual SoC mean")
+    def _soc_xlim_zero_left(*series) -> tuple[float, float]:
+        """SoC is non-negative: pin x=0 to the y-axis (no gap before zero)."""
+        xs = np.concatenate(
+            [np.asarray(s, dtype=float).ravel() for s in series if s is not None]
+        )
+        xs = xs[np.isfinite(xs)]
+        if xs.size == 0:
+            return 0.0, 1.0
+        hi = float(np.nanmax(xs))
+        pad = 0.05 * hi if hi > 0 else 0.05
+        return 0.0, hi + pad
 
-    ax.set_xlim(0, 24)
-    ax.set_xlabel("Delivery hour (product time)")
-    ax.set_ylabel("SoC (MWh)")
-    ax.grid(True, alpha=0.35)
-    ax.legend(loc="best", fontsize=8)
+    if swap_axes:
+        if plot_da:
+            ax.fill_betweenx(
+                h,
+                summary_da["q_low"],
+                summary_da["q_high"],
+                alpha=band_alpha,
+                color=c["fill_da"],
+                label=f"DA SoC {qlab}",
+            )
+            ax.plot(
+                summary_da["mean"],
+                h,
+                color=c["mean_da"],
+                lw=2,
+                label="DA SoC mean",
+            )
+            ax.fill_betweenx(
+                h,
+                summary_all["q_low"],
+                summary_all["q_high"],
+                alpha=band_alpha,
+                color=c["fill_actual"],
+                label=f"Actual SoC {qlab}",
+            )
+            ax.plot(
+                summary_all["mean"],
+                h,
+                color=c["mean_actual"],
+                lw=2,
+                label="Actual SoC mean",
+            )
+            x0, x1 = _soc_xlim_zero_left(
+                summary_da["q_low"],
+                summary_da["q_high"],
+                summary_all["q_low"],
+                summary_all["q_high"],
+                summary_da["mean"],
+                summary_all["mean"],
+            )
+        else:
+            ax.fill_betweenx(
+                h,
+                summary_all["q_low"],
+                summary_all["q_high"],
+                alpha=band_alpha,
+                color=c["fill_actual"],
+                label=f"SoC {qlab}",
+            )
+            ax.plot(
+                summary_all["mean"],
+                h,
+                color=c["mean_actual"],
+                lw=2,
+                label="SoC mean",
+            )
+            x0, x1 = _soc_xlim_zero_left(
+                summary_all["q_low"],
+                summary_all["q_high"],
+                summary_all["mean"],
+            )
+        ax.set_ylim(0, 24)
+        yticks = np.arange(0, 25, 2, dtype=float)
+        ax.set_yticks(yticks)
+        ax.set_yticklabels([f"{int(t):02d}:00" for t in yticks])
+        ax.set_xlim(x0, x1)
+        ax.margins(x=0)
+        ax.set_xlabel("State of Charge (MWh)")
+        ax.set_ylabel("Delivery hour (product time)")
+    elif plot_da:
+        ax.fill_between(
+            h,
+            summary_da["q_low"],
+            summary_da["q_high"],
+            alpha=band_alpha,
+            color=c["fill_da"],
+            label=f"DA SoC {qlab}",
+        )
+        ax.plot(
+            h,
+            summary_da["mean"],
+            color=c["mean_da"],
+            lw=2,
+            label="DA SoC mean",
+        )
+
+        ax.fill_between(
+            h,
+            summary_all["q_low"],
+            summary_all["q_high"],
+            alpha=band_alpha,
+            color=c["fill_actual"],
+            label=f"Actual SoC {qlab}",
+        )
+        ax.plot(
+            h,
+            summary_all["mean"],
+            color=c["mean_actual"],
+            lw=2,
+            label="Actual SoC mean",
+        )
+
+        ax.set_xlim(0, 24)
+        xticks = np.arange(0, 25, 2, dtype=float)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([f"{int(t):02d}:00" for t in xticks])
+        ax.set_xlabel("Delivery hour (product time)")
+        ax.set_ylabel("State of Charge (MWh)")
+    else:
+        ax.fill_between(
+            h,
+            summary_all["q_low"],
+            summary_all["q_high"],
+            alpha=band_alpha,
+            color=c["fill_actual"],
+            label=f"SoC {qlab}",
+        )
+        ax.plot(
+            h,
+            summary_all["mean"],
+            color=c["mean_actual"],
+            lw=2,
+            label="SoC mean",
+        )
+
+        ax.set_xlim(0, 24)
+        xticks = np.arange(0, 25, 2, dtype=float)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([f"{int(t):02d}:00" for t in xticks])
+        ax.set_xlabel("Delivery hour (product time)")
+        ax.set_ylabel("State of Charge (MWh)")
+
+    if show_grid:
+        ax.grid(True, alpha=0.35)
+    else:
+        ax.grid(False)
+
+    if show_legend:
+        _lf = legend_fontsize if legend_fontsize is not None else 8
+        leg = ax.legend(loc="best", fontsize=_lf)
+        if leg.get_title().get_text():
+            leg.get_title().set_fontsize(_lf)
+    if axis_labelsize is not None:
+        ax.xaxis.label.set_fontsize(axis_labelsize)
+        ax.yaxis.label.set_fontsize(axis_labelsize)
+    if tick_labelsize is not None:
+        ax.tick_params(axis="both", which="major", labelsize=tick_labelsize)
+
     if title:
         ax.set_title(title)
 
@@ -251,8 +496,9 @@ def rl_soc_plot_from_test_days(
     *,
     repo_root: Path | None = None,
     bs_folder: str = "bs15cr1rto0.86mc365mt10",
-    q_low: float = 0.10,
-    q_high: float = 0.90,
+    q_low: float = 0.25,
+    q_high: float = 0.75,
+    title: str | None = None,
     **soc_kw,
 ):
     """
@@ -275,8 +521,85 @@ def rl_soc_plot_from_test_days(
     fig, ax = plot_mean_quantile_soc(
         s_da,
         s_all,
-        title=f"SoC profiles (coordinated RL, model {model_number})",
+        plot_da=True,
+        title=title,
         q_low=q_low,
         q_high=q_high,
     )
     return fig, ax, mat_da, mat_all, s_da, s_all
+
+
+def myopic_soc_plot_from_test_days(
+    delivery_days: pd.Series,
+    *,
+    repo_root: Path | None = None,
+    bs_folder: str = "bs15cr1rto0.86mc365mt10",
+    q_low: float = 0.25,
+    q_high: float = 0.75,
+    title: str | None = None,
+    **soc_kw,
+):
+    """
+    Same SoC logic as coordinated RL: DA (ex. hour 13) + actual, myopic trade folder.
+    Returns ``(fig, ax, mat_da, mat_all, summary_da, summary_all)``.
+    """
+    from evaluation.rl_model_registry import myopic_rolling_intrinsic_trades_dir
+
+    trades_dir = myopic_rolling_intrinsic_trades_dir(
+        repo_root=repo_root, bs_folder=bs_folder
+    )
+    mat_da = build_soc_profile_matrix(
+        trades_dir, delivery_days, mode="da_only", **soc_kw
+    )
+    mat_all = build_soc_profile_matrix(
+        trades_dir, delivery_days, mode="all", **soc_kw
+    )
+    s_da = summarize_soc_across_days(mat_da, q_low=q_low, q_high=q_high)
+    s_all = summarize_soc_across_days(mat_all, q_low=q_low, q_high=q_high)
+    fig, ax = plot_mean_quantile_soc(
+        s_da,
+        s_all,
+        plot_da=True,
+        title=title,
+        q_low=q_low,
+        q_high=q_high,
+    )
+    return fig, ax, mat_da, mat_all, s_da, s_all
+
+
+def single_market_soc_plot_from_test_days(
+    delivery_days: pd.Series,
+    *,
+    repo_root: Path | None = None,
+    bs_folder: str = "bs15cr1rto0.86mc365mt10",
+    q_low: float = 0.25,
+    q_high: float = 0.75,
+    title: str | None = None,
+    **soc_kw,
+):
+    """
+    Single-market RI: no DA layer — only **all-trades** SoC (intraday-only economically).
+
+    Returns ``(fig, ax, mat_all, summary_all)`` (no ``mat_da`` / ``summary_da``).
+    """
+    mat_all = build_soc_profile_matrix_resolved(
+        delivery_days,
+        lambda dd: single_market_trades_file(dd, repo_root=repo_root, bs_folder=bs_folder),
+        mode="all",
+        **soc_kw,
+    )
+    s_all = summarize_soc_across_days(mat_all, q_low=q_low, q_high=q_high)
+    s_da_empty = summarize_soc_across_days(
+        pd.DataFrame(columns=[f"slot_{i:02d}" for i in range(96)]),
+        q_low=q_low,
+        q_high=q_high,
+    )
+    fig, ax = plot_mean_quantile_soc(
+        s_da_empty,
+        s_all,
+        plot_da=False,
+        title=title,
+        q_low=q_low,
+        q_high=q_high,
+    )
+    return fig, ax, mat_all, s_all

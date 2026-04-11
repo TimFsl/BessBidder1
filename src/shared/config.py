@@ -21,7 +21,7 @@ DATA_END   = pd.Timestamp(year=2025, month=9, day=30, tz="Europe/Berlin")
 
 # Train data timeframe
 TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-TRAIN_END   = pd.Timestamp(year=2024, month=9, day=30, tz="Europe/Berlin") + pd.Timedelta(days=1)
+TRAIN_END   = pd.Timestamp(year=2021, month=3, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # Validation timeframe
 VAL_START = pd.Timestamp(year=2021, month=4, day=1, tz="Europe/Berlin")
@@ -35,9 +35,9 @@ VAL_END   = pd.Timestamp(year=2021, month=9, day=30, tz="Europe/Berlin") + pd.Ti
 #   remove them from training, and use them as validation.
 #
 # Important: keep this deterministic for thesis comparability.
-VAL_SPLIT_MODE = "contiguous"  # "contiguous" or "random_holdout_from_train"
+VAL_SPLIT_MODE = "random_holdout_from_train"  # "contiguous" or "random_holdout_from_train"
 VAL_HOLDOUT_UNIT = "day"       # "day" or "week"
-VAL_HOLDOUT_N = 180             # number of days or ISO weeks held out from training
+VAL_HOLDOUT_N = 90             # number of days or ISO weeks held out from training
 VAL_HOLDOUT_SEED = 42        # default: reuse global seed # 42
 
 # Test timeframe
