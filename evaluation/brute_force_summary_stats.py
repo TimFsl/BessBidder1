@@ -3,6 +3,9 @@ Statistics from per-day brute-force summaries (``summary_YYYY-MM-DD.csv``).
 
 Each file lists many DA buy/sell-hour combinations with a ``profit`` column.
 We aggregate per calendar day: max, median, 75% and 90% quantiles of ``profit``.
+
+If ``da_profit`` is present (enriched summaries), the same aggregates are computed for
+``da_profit`` and for ``idc_profit = profit - da_profit`` per row.
 """
 
 from __future__ import annotations
@@ -33,13 +36,29 @@ def summary_csv_path(delivery_day: pd.Timestamp, results_dir: Path | None = None
 def profit_stats_from_summary_df(df: pd.DataFrame) -> dict[str, float]:
     if "profit" not in df.columns:
         raise ValueError("Expected column 'profit' in summary CSV")
-    p = df["profit"].astype(float)
-    return {
+    p = pd.to_numeric(df["profit"], errors="coerce")
+    out: dict[str, float] = {
         "theoretical_max_profit": float(p.max()),
         "brute_median_profit": float(p.median()),
         "brute_q075_profit": float(p.quantile(0.75)),
         "brute_q090_profit": float(p.quantile(0.90)),
     }
+    if "da_profit" in df.columns:
+        da = pd.to_numeric(df["da_profit"], errors="coerce")
+        idc = p - da
+        out.update(
+            {
+                "theoretical_max_da_profit": float(da.max()),
+                "brute_median_da_profit": float(da.median()),
+                "brute_q075_da_profit": float(da.quantile(0.75)),
+                "brute_q090_da_profit": float(da.quantile(0.90)),
+                "theoretical_max_idc_profit": float(idc.max()),
+                "brute_median_idc_profit": float(idc.median()),
+                "brute_q075_idc_profit": float(idc.quantile(0.75)),
+                "brute_q090_idc_profit": float(idc.quantile(0.90)),
+            }
+        )
+    return out
 
 
 def profit_stats_from_summary_file(path: Path) -> dict[str, float]:
@@ -237,7 +256,8 @@ def brute_force_stats_for_delivery_days(
     on_missing: str = "warn",
 ) -> pd.DataFrame:
     """
-    One row per delivery day with aggregated profit statistics.
+    One row per delivery day with aggregated profit statistics (total, and DA/IDC if
+    ``da_profit`` exists in each summary file).
 
     Parameters
     ----------
@@ -272,6 +292,14 @@ def brute_force_stats_for_delivery_days(
                 "brute_median_profit",
                 "brute_q075_profit",
                 "brute_q090_profit",
+                "theoretical_max_da_profit",
+                "brute_median_da_profit",
+                "brute_q075_da_profit",
+                "brute_q090_da_profit",
+                "theoretical_max_idc_profit",
+                "brute_median_idc_profit",
+                "brute_q075_idc_profit",
+                "brute_q090_idc_profit",
             ]
         )
     out = pd.DataFrame(rows)

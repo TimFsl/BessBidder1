@@ -84,10 +84,11 @@ def build_training_period_baselines_df(
             stacklevel=2,
         )
 
-    try:
+    single_csv = Path(base_paths["single_file"])
+    if single_csv.is_file():
+        single = load_profit_csv(single_csv)
+    else:
         single = load_single_market_profits_from_glob(base_paths["single_glob"])
-    except FileNotFoundError:
-        single = load_profit_csv(base_paths["single_file"])
     single = single.rename(columns={"profit": "profit_single_market_ri"})[
         ["delivery_day", "profit_single_market_ri"]
     ]

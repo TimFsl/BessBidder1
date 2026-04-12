@@ -197,7 +197,12 @@ def baseline_paths_bs15(
     repo_root: Path | None = None,
     bs_folder: str = "bs15cr1rto0.86mc365mt10",
 ) -> dict[str, str]:
-    """Myopic + single-market paths (not tied to RL model id)."""
+    """Myopic + single-market paths (not tied to RL model id).
+
+    Single-market RI uses a consolidated ``output/single_market/profit.csv`` and
+    ``output/single_market/trades/`` (see :func:`evaluation.soc_profiles.single_market_trades_file`).
+    ``single_glob`` remains a legacy per-year layout used only as a fallback when the flat file is absent.
+    """
     root = repo_root or Path(__file__).resolve().parents[1]
     return {
         "myopic": str(
@@ -206,13 +211,8 @@ def baseline_paths_bs15(
             / bs_folder
             / "profit.csv"
         ),
+        "single_file": str(root / "output/single_market/profit.csv"),
         "single_glob": f"output/single_market/rolling_intrinsic/ri_basic/qh/*/{bs_folder}/profit.csv",
-        "single_file": str(
-            root
-            / "output/single_market/rolling_intrinsic/ri_basic/qh/2019"
-            / bs_folder
-            / "profit.csv"
-        ),
     }
 
 

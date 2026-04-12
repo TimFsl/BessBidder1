@@ -36,7 +36,7 @@ from evaluation.soc_profiles import (
 
 def daily_da_idc_profit_from_trades_file(path: Path | str) -> tuple[float, float]:
     """
-    Sum ``profit`` for rows with DA execution (hour 13 Berlin) vs all other rows.
+    Sum ``profit`` for rows with DA execution (13:00 Europe/Berlin) vs all other rows.
 
     Returns ``(profit_da_eur, profit_intraday_eur)``.
     """

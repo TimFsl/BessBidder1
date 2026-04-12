@@ -6,7 +6,7 @@ signed power: buy → charge, sell → discharge. This matches the logic in your
 reference plotting script.
 
 - **Day-ahead SoC**: only trades whose ``execution_time`` is **13:00** in Europe/Berlin
-  (hour == 13; DA auction).
+  (see :func:`is_da_execution`; not other 13:xx intraday gates).
 - **Actual SoC**: all trades (DA + intraday) — the physically realised path over the day.
 """
 
@@ -60,8 +60,13 @@ def prep_trades_for_soc(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def is_da_execution(execution_time: pd.Series) -> pd.Series:
-    """DA auction rows: execution at 13:xx Berlin (typically 13:00)."""
-    return execution_time.dt.hour == 13
+    """
+    DA auction rows: execution at **13:00** Europe/Berlin.
+
+    Using the whole clock hour (``hour == 13``) would mis-label intraday trades at e.g.
+    13:45 as day-ahead; coordinated RL logs DA at 13:00 exactly.
+    """
+    return (execution_time.dt.hour == 13) & (execution_time.dt.minute == 0)
 
 
 def soc_by_product_slots(
@@ -183,13 +188,18 @@ def single_market_trades_file(
     bs_folder: str = "bs15cr1rto0.86mc365mt10",
 ) -> Path | None:
     """
-    Resolve ``trades_YYYY-MM-DD.csv`` under ``qh/<year>/`` (or any ``qh/*`` fallback).
-    Single-market RI stores outputs per calendar year.
+    Resolve ``trades_YYYY-MM-DD.csv`` for single-market RI.
+
+    Prefers ``output/single_market/trades/``; falls back to legacy
+    ``output/single_market/rolling_intrinsic/ri_basic/qh/<year>/<bs_folder>/trades/``.
     """
     root = repo_root or _REPO
-    qh_root = root / "output/single_market/rolling_intrinsic/ri_basic/qh"
     dd = pd.Timestamp(delivery_day).tz_convert("Europe/Berlin").normalize()
     iso = dd.date().isoformat()
+    flat = root / "output/single_market/trades" / f"trades_{iso}.csv"
+    if flat.is_file():
+        return flat
+    qh_root = root / "output/single_market/rolling_intrinsic/ri_basic/qh"
     year_first = qh_root / str(dd.year) / bs_folder / "trades" / f"trades_{iso}.csv"
     if year_first.is_file():
         return year_first
@@ -404,7 +414,7 @@ def plot_mean_quantile_soc(
         ax.set_xlim(x0, x1)
         ax.margins(x=0)
         ax.set_xlabel("State of Charge (MWh)")
-        ax.set_ylabel("Delivery hour (product time)")
+        ax.set_ylabel("Delivery hour")
     elif plot_da:
         ax.fill_between(
             h,
@@ -442,7 +452,7 @@ def plot_mean_quantile_soc(
         xticks = np.arange(0, 25, 2, dtype=float)
         ax.set_xticks(xticks)
         ax.set_xticklabels([f"{int(t):02d}:00" for t in xticks])
-        ax.set_xlabel("Delivery hour (product time)")
+        ax.set_xlabel("Delivery hour")
         ax.set_ylabel("State of Charge (MWh)")
     else:
         ax.fill_between(
@@ -465,7 +475,7 @@ def plot_mean_quantile_soc(
         xticks = np.arange(0, 25, 2, dtype=float)
         ax.set_xticks(xticks)
         ax.set_xticklabels([f"{int(t):02d}:00" for t in xticks])
-        ax.set_xlabel("Delivery hour (product time)")
+        ax.set_xlabel("Delivery hour")
         ax.set_ylabel("State of Charge (MWh)")
 
     if show_grid:

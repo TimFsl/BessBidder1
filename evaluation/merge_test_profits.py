@@ -48,8 +48,11 @@ def load_single_market_profits_from_glob(pattern: str) -> pd.DataFrame:
     """
     Load and concatenate multiple profit.csv files (e.g. one per calendar year).
 
-    Example pattern (repo root)::
+    Example pattern (repo root), legacy multi-year layout::
         output/single_market/rolling_intrinsic/ri_basic/qh/*/bs15cr1rto0.86mc365mt10/profit.csv
+
+    Prefer a single consolidated file via ``single_market_profit_csv`` (e.g.
+    ``output/single_market/profit.csv``) when available.
     """
     root = _repo_root()
     paths = sorted(root.glob(pattern))
@@ -155,17 +158,25 @@ if __name__ == "__main__":
     mid = os.environ.get("RL_MODEL_NUMBER", "0")
     paths = default_paths_bs15(mid)
     print("Model", paths["model_number"], "train", paths["train_start"], "→", paths["train_end_inclusive"])
-    try:
-        df = build_test_comparison_df(
-            paths["rl"],
-            paths["myopic"],
-            single_market_glob=paths["single_glob"],
-        )
-    except FileNotFoundError:
+    single_csv = Path(paths["single_file"])
+    if single_csv.is_file():
         df = build_test_comparison_df(
             paths["rl"],
             paths["myopic"],
             single_market_profit_csv=paths["single_file"],
         )
+    else:
+        try:
+            df = build_test_comparison_df(
+                paths["rl"],
+                paths["myopic"],
+                single_market_glob=paths["single_glob"],
+            )
+        except FileNotFoundError:
+            df = build_test_comparison_df(
+                paths["rl"],
+                paths["myopic"],
+                single_market_profit_csv=paths["single_file"],
+            )
     print(df.head())
     print("rows:", len(df), "non-null single_market:", df["profit_single_market_ri"].notna().sum())
