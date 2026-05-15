@@ -41,6 +41,22 @@ def trades_dir_next_to_profit(profit_csv: Path | str) -> Path:
     return Path(profit_csv).resolve().parent / "trades"
 
 
+def delivery_day_from_trades_filename(path: Path | str) -> pd.Timestamp:
+    """
+    Parse delivery day (Berlin midnight) from ``trades_YYYY-MM-DD.csv`` filename.
+    """
+    p = Path(path)
+    stem = p.stem
+    prefix = "trades_"
+    if not stem.startswith(prefix):
+        raise ValueError(f"{p}: expected filename pattern 'trades_YYYY-MM-DD.csv'")
+    date_s = stem[len(prefix) :]
+    dd = pd.Timestamp(date_s)
+    if pd.isna(dd):
+        raise ValueError(f"{p}: could not parse delivery day from filename")
+    return dd.tz_localize("Europe/Berlin").normalize()
+
+
 def prep_trades_for_soc(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["execution_time"] = pd.to_datetime(df["execution_time"], utc=True).dt.tz_convert(
@@ -59,14 +75,28 @@ def prep_trades_for_soc(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def is_da_execution(execution_time: pd.Series) -> pd.Series:
+def is_da_execution(
+    execution_time: pd.Series,
+    *,
+    delivery_day: pd.Timestamp | None = None,
+) -> pd.Series:
     """
     DA auction rows: execution at **13:00** Europe/Berlin.
 
-    Using the whole clock hour (``hour == 13``) would mis-label intraday trades at e.g.
-    13:45 as day-ahead; coordinated RL logs DA at 13:00 exactly.
+    If ``delivery_day`` is provided, DA rows must also be on ``delivery_day - 1 day``.
+    This is the intended split for ``trades_YYYY-MM-DD.csv`` files where the file date is
+    delivery day and intraday trading can continue through delivery day itself.
     """
-    return (execution_time.dt.hour == 13) & (execution_time.dt.minute == 0)
+    mask = (execution_time.dt.hour == 13) & (execution_time.dt.minute == 0)
+    if delivery_day is None:
+        return mask
+    dd = pd.Timestamp(delivery_day)
+    if dd.tzinfo is None:
+        dd = dd.tz_localize("Europe/Berlin")
+    else:
+        dd = dd.tz_convert("Europe/Berlin")
+    da_day = (dd - pd.Timedelta(days=1)).normalize()
+    return mask & (execution_time.dt.normalize() == da_day)
 
 
 def soc_by_product_slots(
@@ -132,10 +162,12 @@ def soc_profile_for_trades_file(
     **soc_kw,
 ) -> np.ndarray:
     """One SoC center trajectory (length 96) for a single day's trades CSV."""
-    df = pd.read_csv(path)
+    p = Path(path)
+    df = pd.read_csv(p)
     df = prep_trades_for_soc(df)
     if mode == "da_only":
-        df = df.loc[is_da_execution(df["execution_time"])].copy()
+        dd = delivery_day_from_trades_filename(p)
+        df = df.loc[is_da_execution(df["execution_time"], delivery_day=dd)].copy()
     _, soc_c = soc_by_product_slots(df, **soc_kw)
     return soc_c
 

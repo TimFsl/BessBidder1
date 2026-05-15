@@ -38,7 +38,7 @@ from src.shared.config import (
 # Keys are package suffixes under ``src.coordinated_multi_market``.
 # Use "legacy" for the top-level ``src.coordinated_multi_market.*`` (no v-prefixed subpackage).
 # ---------------------------------------------------------------------------
-MODEL_VERSION = "v3_counterfactual_reward_lookup"
+MODEL_VERSION = "v13_baseline_counterfactual_reward"
 # Examples: "legacy", "v1_baseline_without_extensions", "v2_baseline_extended_obs_space",
 #           "v3_counterfactual_reward_lookup", "v4_counterfactual_reward_calculating"
 
@@ -47,6 +47,19 @@ _PIPELINE_PACKAGES: dict[str, str] = {
     "v1_baseline_without_extensions": (
         "src.coordinated_multi_market.v1_baseline_without_extensions"
     ),
+    "v10_baseline_without_extensions_reward_lookup": (
+        "src.coordinated_multi_market.v10_baseline_without_extensions_reward_lookup"
+    ),
+    "v11_baseline_extended_observation_space": (
+        "src.coordinated_multi_market.v11_baseline_extended_observation_space"
+    ),
+    "v12_baseline_open_positions": (
+        "src.coordinated_multi_market.v12_baseline_open_positions"
+    ),
+    "v13_baseline_counterfactual_reward": (
+        "src.coordinated_multi_market.v13_baseline_counterfactual_reward"
+    ),
+
     "v2_baseline_extended_obs_space": (
         "src.coordinated_multi_market.v2_baseline_extended_obs_space"
     ),
@@ -141,8 +154,8 @@ if __name__ == "__main__":
     logger.info("Test pipeline MODEL_VERSION=%s", MODEL_VERSION)
 
     # Specify to be analysed model
-    model_number = "4"
-    model_checkpoint = "ppo_stacked_checkpoint_1000000_steps"
+    model_number = "18"
+    model_checkpoint = "ppo_stacked_checkpoint_5000000_steps"
 
     versioned_log_path = os.path.join(LOGGING_PATH_COORDINATED, model_number)
     versioned_model_path = os.path.join(MODEL_OUTPUT_PATH_COORDINATED, model_number)

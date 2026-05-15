@@ -10,13 +10,17 @@ from stable_baselines3.common.utils import obs_as_tensor
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import PPO
 
-from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_h_intelligent_stacking import (
-    simulate_period_hourly_products,
+from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_qh_intelligent_stacking_open_pos import (
+    simulate_days_stacked_quarterhourly_products,
 )
-from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_qh_intelligent_stacking import (
-    simulate_period_quarterhourly_products,
+from src.Archive.old_setup.local_config import (
+    BUCKET_SIZE,
+    C_RATE,
+    IDC_REWARD_START_STEP,
+    MAX_CYCLES_PER_DAY,
+    MIN_TRADES,
+    RTE,
 )
-from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADES, RTE
 
 
 class CustomPPO(PPO):
@@ -53,9 +57,11 @@ class CustomPPO(PPO):
 
         n_steps = 0
         rollout_buffer.reset()
-        timestamp_buffer = np.zeros(2048)
-        position_buffer = np.zeros(2048)
-        clearing_price_buffer = np.zeros(2048)
+        # Only keep data for the current rollout horizon and avoid
+        # zero-initialization, which can turn into 1970-01-01 timestamps.
+        timestamp_buffer = np.full(n_rollout_steps, np.nan)
+        position_buffer = np.zeros(n_rollout_steps)
+        clearing_price_buffer = np.zeros(n_rollout_steps)
         # TODO: Add revenue buffer for scaling the rewards
 
         # Sample new weights for the state dependent exploration
@@ -135,12 +141,11 @@ class CustomPPO(PPO):
             )
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
-            if n_steps > 1:
-                timestamp_buffer[n_steps - 1] = infos[0]["timestamp"]
-                position_buffer[n_steps - 1] = infos[0]["position"]
-                clearing_price_buffer[n_steps - 1] = infos[0]["clearing_price"]
-                scaling_max_price = infos[0]["scaling_max_price"]
-                scaling_min_price = infos[0]["scaling_min_price"]
+            timestamp_buffer[n_steps - 1] = infos[0]["timestamp"]
+            position_buffer[n_steps - 1] = infos[0]["position"]
+            clearing_price_buffer[n_steps - 1] = infos[0]["clearing_price"]
+            scaling_max_price = infos[0]["scaling_max_price"]
+            scaling_min_price = infos[0]["scaling_min_price"]
 
         with th.no_grad():
             # Compute value for the last timestep
@@ -150,16 +155,21 @@ class CustomPPO(PPO):
             rollout_buffer.episode_starts.flatten()
         )
         for row_start, num_rows in complete_periods.items():
+            raw_period_timestamps = timestamp_buffer[row_start : row_start + num_rows]
+            if np.isnan(raw_period_timestamps).any():
+                # Skip incomplete windows defensively.
+                continue
+
             period_timestamps = pd.to_datetime(
-                timestamp_buffer[row_start : row_start + num_rows], utc=True
+                raw_period_timestamps, utc=True
             ).tz_convert("Europe/Berlin")
             period_volumes = position_buffer[row_start : row_start + num_rows]
             if not self._check_if_complete_cycle(period_volumes):
                 continue
 
             if (
-                self.num_timesteps >= 200_000
-            ):  # in case you want to first train only on DA for 240_000 -> set num_timesteps to 240_000)
+                self.num_timesteps >= IDC_REWARD_START_STEP
+            ):  # hard-coded DA warmup, then add IDC reward
                 period_clearing_prices = clearing_price_buffer[
                     row_start : row_start + num_rows
                 ]
@@ -203,7 +213,7 @@ class CustomPPO(PPO):
                     "total_profit"
                 ].sum()
 
-                ri_reward_per_scaled = ri_stacked_profit / (85) / num_rows
+                ri_reward_per_scaled = ri_stacked_profit / (10) / num_rows
 
                 # just scale by average reward made in IDM in naive case
                 rolling_intrinsic_rewards = np.repeat(ri_reward_per_scaled, num_rows)
@@ -234,18 +244,15 @@ class CustomPPO(PPO):
     ):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_stacked = executor.submit(
-                simulate_period_quarterhourly_products,
+                simulate_days_stacked_quarterhourly_products,
                 start_day=period_timestamps[0],
                 end_day=period_timestamps[0] + pd.Timedelta(days=1),
-                threshold=0,
-                threshold_abs_min=0,
                 discount_rate=0,
-                bucket_size=BUCKET_SIZE,
                 c_rate=C_RATE,
                 roundtrip_eff=RTE,
                 max_cycles=MAX_CYCLES_PER_DAY,
                 min_trades=MIN_TRADES,
-                day_ahead_trades_drl=da_trades,
+                drl_output=da_trades,
             )
 
             # future_non_stacked = executor.submit(
@@ -270,40 +277,9 @@ class CustomPPO(PPO):
 
     @staticmethod
     def run_simulations_hourly_products_in_parallel(period_timestamps, da_trades):
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_stacked = executor.submit(
-                simulate_period_hourly_products,
-                start_day=period_timestamps[0],
-                end_day=period_timestamps[0] + pd.Timedelta(days=1),
-                threshold=0,
-                threshold_abs_min=0,
-                discount_rate=0,
-                bucket_size=BUCKET_SIZE,
-                c_rate=C_RATE,
-                roundtrip_eff=RTE,
-                max_cycles=MAX_CYCLES_PER_DAY,
-                min_trades=MIN_TRADES,
-                day_ahead_trades_drl=da_trades,
-            )
-
-            future_non_stacked = executor.submit(
-                simulate_period_hourly_products,
-                start_day=period_timestamps[0],
-                end_day=period_timestamps[0] + pd.Timedelta(days=1),
-                threshold=0,
-                threshold_abs_min=0,
-                discount_rate=0,
-                bucket_size=BUCKET_SIZE,
-                c_rate=C_RATE,
-                roundtrip_eff=RTE,
-                max_cycles=MAX_CYCLES_PER_DAY,
-                min_trades=MIN_TRADES,
-            )
-
-            rolling_intrinsic_results_stacked = future_stacked.result()
-            rolling_intrinsic_results_non_stacked = future_non_stacked.result()
-
-        return rolling_intrinsic_results_stacked, rolling_intrinsic_results_non_stacked
+        raise NotImplementedError(
+            "old_setup test run currently supports intraday_product_type='QH' only."
+        )
 
     @staticmethod
     def _derive_period_lenghts_from_episode_starts_array(episode_starts: np.ndarray):

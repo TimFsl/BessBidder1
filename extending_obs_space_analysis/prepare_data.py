@@ -15,8 +15,7 @@ import pandas as pd
 @dataclass(frozen=True)
 class PipelinePaths:
     drl_csv: Path
-    ri_profit_2019_csv: Path
-    ri_profit_2023_csv: Path
+    ri_profit: Path
     da_milp_exaa_csv: Path
     da_milp_epex_csv: Path
 
@@ -84,8 +83,9 @@ def load_drl_data(
 
 
 def load_profit_data(
-    ri_profit_2019_csv: Path,
-    ri_profit_2023_csv: Path,
+    #ri_profit_2019_csv: Path,
+    #ri_profit_2023_csv: Path,
+    ri_profit: Path,
     da_milp_exaa_csv: Path,
     da_milp_epex_csv: Path,
     date_slice: Tuple[str, str] = ("2019-01-01", "2023-12-31"),
@@ -98,9 +98,11 @@ def load_profit_data(
     """
 
     # --- rolling intrinsic profit
-    ri1 = pd.read_csv(ri_profit_2019_csv)
-    ri2 = pd.read_csv(ri_profit_2023_csv)
-    ri = pd.concat([ri1, ri2], ignore_index=True).set_index("day")
+    #ri1 = pd.read_csv(ri_profit_2019_csv)
+    #ri2 = pd.read_csv(ri_profit_2023_csv)
+    #ri = pd.concat([ri1, ri2], ignore_index=True).set_index("day")
+
+    ri = pd.read_csv(ri_profit, parse_dates=["day"]).set_index("day")
 
     # Your original index parsing: take first 19 chars -> to_datetime -> tz_localize UTC
     idx = pd.to_datetime(ri.index.astype(str).str.slice(0, 19)).tz_localize("UTC")
@@ -241,6 +243,22 @@ def build_daily_features(
         daily["residual_load_forecast_max"] - daily["residual_load_forecast_min"]
     )
 
+    # lagged daily spread statistics between intraday (id_full_h) and day-ahead (epex)
+    # shift(1): value for day D uses only spread stats from day D-1 (leakage-safe).
+    spread_id_full_da_h = drl["id_full_h"] - drl["epex_price"]
+    spread_stats_lag1 = spread_id_full_da_h.resample("D").agg(
+        ["mean", "std", "min", "max"]
+    ).shift(1)
+    spread_stats_lag1 = spread_stats_lag1.rename(
+        columns={
+            "mean": "spread_id_full_da_h_mean_lag1",
+            "std": "spread_id_full_da_h_std_lag1",
+            "min": "spread_id_full_da_h_min_lag1",
+            "max": "spread_id_full_da_h_max_lag1",
+        }
+    )
+    daily = daily.join(spread_stats_lag1, how="left")
+
     # calendar
     daily["day_of_week"] = daily.index.dayofweek
     daily["month"] = daily.index.month
@@ -360,8 +378,7 @@ def build_training_dataframe(
     daily_features = build_daily_features(drl)
 
     profit = load_profit_data(
-        paths.ri_profit_2019_csv,
-        paths.ri_profit_2023_csv,
+        paths.ri_profit,
         paths.da_milp_exaa_csv,
         paths.da_milp_epex_csv,
         date_slice=date_slice,

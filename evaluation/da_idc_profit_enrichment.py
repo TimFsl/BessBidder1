@@ -2,8 +2,9 @@
 Day-ahead vs intraday (IDC) profit splits from ``trades_YYYY-MM-DD.csv``.
 
 Rolling-intrinsic ``profit.csv`` rows are **total** €; DA vs IDC comes from summing
-``profit`` in trades where execution is the DA auction (**13:00** Europe/Berlin) vs not
-(same rule as :func:`evaluation.coordinated_rl_test_plots.daily_da_idc_profit_from_trades_file`).
+``profit`` in trades where execution is the DA auction time (**13:00** Europe/Berlin)
+on **delivery day - 1** vs not (same rule as
+:func:`evaluation.coordinated_rl_test_plots.daily_da_idc_profit_from_trades_file`).
 
 Use :func:`profit_comparison_summary` for a compact table (seven strategy columns × four
 stat rows: mean total / mean DA / mean IDC / std of total daily €).

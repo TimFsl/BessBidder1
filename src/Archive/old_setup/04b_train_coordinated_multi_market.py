@@ -14,6 +14,7 @@ Requires:
 """
 
 import os
+import numpy as np
 import pandas as pd
 import torch
 
@@ -22,18 +23,17 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from src.coordinated_multi_market.basic_battery_dam_env import BasicBatteryDAM
-from src.coordinated_multi_market.custom_ppo import CustomPPO
-from src.coordinated_multi_market.learning_utils import (
+from src.Archive.old_setup.basic_battery_dam_env import BasicBatteryDAM
+from src.Archive.old_setup.custom_ppo import CustomPPO
+from src.Archive.old_setup.learning_utils import (
     load_input_data,
     prepare_input_data,
     linear_schedule,
     orthogonal_weight_init,
-    CustomPPO,
 )
 
 from src.shared.folder_versioning import create_new_dir_version
-from src.shared.config import (
+from src.Archive.old_setup.local_config import (
     COORDINATED_MODEL_NAME_QH,
     LOGGING_PATH_COORDINATED,
     MODEL_OUTPUT_PATH_COORDINATED,
@@ -63,10 +63,12 @@ if __name__ == "__main__":
     df_spot_train, df_spot_test = load_input_data(write_test=True)
 
     # Drop problematic days known to break RI algorithm
+    problematic_days = np.array(
+        [pd.Timestamp("2020-11-15").date(), pd.Timestamp("2020-12-27").date()],
+        dtype=object,
+    )
     df_spot_train = df_spot_train[
-        ~df_spot_train.index.date.isin(
-            [pd.Timestamp("2020-11-15").date(), pd.Timestamp("2020-12-27").date()]
-        )
+        ~np.isin(df_spot_train.index.date, problematic_days)
     ]
 
     # Apply preprocessing and feature scaling
@@ -81,7 +83,9 @@ if __name__ == "__main__":
     )
 
     # Validate custom environment (optional)
+    print("Running check_env ...")
     check_env(env)
+    print("check_env done.")
     env = Monitor(env)
     env = DummyVecEnv([lambda: env])
 
@@ -110,7 +114,7 @@ if __name__ == "__main__":
     model = CustomPPO(
         "MlpPolicy",
         env,
-        verbose=0,
+        verbose=1,
         tensorboard_log=TENSORBOARD_PATH_INTELLIGENT,
         device=device,
         seed=SEED,
@@ -125,6 +129,7 @@ if __name__ == "__main__":
     )
 
     # Train the model
+    print("Starting model.learn ...")
     model.learn(
         total_timesteps=TRAINING_STEPS_INTELLIGENT,
         callback=checkpoint_callback,

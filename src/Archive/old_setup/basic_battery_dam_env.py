@@ -7,7 +7,7 @@ import pandas as pd
 from gymnasium import spaces
 from gymnasium.core import ActType, ObsType
 
-from src.shared.config import TEST_CSV_NAME, TRAIN_CSV_NAME
+from src.Archive.old_setup.local_config import TEST_CSV_NAME, TRAIN_CSV_NAME
 
 SEED = 42
 np.random.seed(SEED)
@@ -137,7 +137,7 @@ class BasicBatteryDAM(gym.Env):
         else:
             realized_quantity = 0
 
-        reward = clearing_price * realized_quantity / (85 / 24)
+        reward = clearing_price * realized_quantity / 10
 
         delta_soc = 0
         delta_soc = (-1) * realized_quantity
@@ -176,7 +176,7 @@ class BasicBatteryDAM(gym.Env):
             # check if we have capacity left in battery
             if self._current_soc > 0:
                 # penalty because missed profit
-                penalty = self._current_soc * (85 / 24)
+                penalty = self._current_soc 
                 reward = -penalty
 
         self.log_data(
@@ -198,6 +198,7 @@ class BasicBatteryDAM(gym.Env):
             profit=profit,
         )
 
+        reward = float(reward)
         return (
             observation,
             reward,

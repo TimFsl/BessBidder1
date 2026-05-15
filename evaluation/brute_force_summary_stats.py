@@ -2,10 +2,11 @@
 Statistics from per-day brute-force summaries (``summary_YYYY-MM-DD.csv``).
 
 Each file lists many DA buy/sell-hour combinations with a ``profit`` column.
-We aggregate per calendar day: max, median, 75% and 90% quantiles of ``profit``.
+We aggregate per calendar day using scenario rows selected by **total profit**:
+max, median, 75% and 90% (nearest-rank style on sorted totals).
 
-If ``da_profit`` is present (enriched summaries), the same aggregates are computed for
-``da_profit`` and for ``idc_profit = profit - da_profit`` per row.
+If ``da_profit`` is present (enriched summaries), DA/IDC stats are read from those
+same selected rows so each metric remains internally aligned to one scenario.
 """
 
 from __future__ import annotations
@@ -33,29 +34,102 @@ def summary_csv_path(delivery_day: pd.Timestamp, results_dir: Path | None = None
     return rd / f"summary_{d.isoformat()}.csv"
 
 
+def empirical_profit_quantile_midrank(
+    scenario_profits: Iterable[float] | pd.Series,
+    observed_profit: float,
+    *,
+    atol: float = 1e-9,
+) -> float:
+    """
+    Midrank empirical quantile of ``observed_profit`` in ``scenario_profits``.
+
+    Returns a value in ``[0, 1]``: share of scenarios strictly below, plus half of ties,
+    divided by ``n`` (standard tie handling for percentile ranks).
+    """
+    s = pd.to_numeric(pd.Series(list(scenario_profits)), errors="coerce").dropna()
+    n = int(s.shape[0])
+    if n == 0 or pd.isna(observed_profit):
+        return float("nan")
+    below = int((s < observed_profit).sum())
+    equal = int((s.sub(float(observed_profit)).abs() <= atol).sum())
+    return (below + 0.5 * equal) / float(n)
+
+
+def profit_quantile_vs_summary_file(
+    summary_path: Path | str,
+    observed_daily_profit: float,
+    *,
+    exclude_no_da_rows: bool = False,
+) -> float:
+    """
+    Quantile rank of one observed daily € profit vs all ``profit`` values in a summary CSV.
+
+    If ``exclude_no_da_rows`` is True, drops rows with ``kind == no_da`` (and ``combo_id == 0``
+    when present) before building the reference distribution.
+    """
+    p = Path(summary_path)
+    if not p.is_file():
+        return float("nan")
+    df = pd.read_csv(p)
+    if "profit" not in df.columns:
+        raise ValueError(f"{p}: expected column 'profit'")
+    if exclude_no_da_rows:
+        m = pd.Series(True, index=df.index)
+        if "kind" in df.columns:
+            m &= df["kind"].astype(str).str.strip().str.lower() != "no_da"
+        if "combo_id" in df.columns:
+            m &= pd.to_numeric(df["combo_id"], errors="coerce") != 0
+        df = df.loc[m].copy()
+    return empirical_profit_quantile_midrank(df["profit"], observed_daily_profit)
+
+
 def profit_stats_from_summary_df(df: pd.DataFrame) -> dict[str, float]:
     if "profit" not in df.columns:
         raise ValueError("Expected column 'profit' in summary CSV")
-    p = pd.to_numeric(df["profit"], errors="coerce")
+    work = df.copy()
+    work["profit"] = pd.to_numeric(work["profit"], errors="coerce")
+    work = work.loc[work["profit"].notna()].copy()
+    if work.empty:
+        return {
+            "theoretical_max_profit": float("nan"),
+            "brute_median_profit": float("nan"),
+            "brute_q075_profit": float("nan"),
+            "brute_q090_profit": float("nan"),
+        }
+
+    # Stable sort for deterministic ties.
+    work = work.sort_values("profit", kind="mergesort").reset_index(drop=True)
+
+    def _idx_for_q(q: float) -> int:
+        n = len(work)
+        if n == 1:
+            return 0
+        return int(round(q * (n - 1)))
+
+    idx_med = _idx_for_q(0.50)
+    idx_q75 = _idx_for_q(0.75)
+    idx_q90 = _idx_for_q(0.90)
+    idx_max = len(work) - 1
+
     out: dict[str, float] = {
-        "theoretical_max_profit": float(p.max()),
-        "brute_median_profit": float(p.median()),
-        "brute_q075_profit": float(p.quantile(0.75)),
-        "brute_q090_profit": float(p.quantile(0.90)),
+        "theoretical_max_profit": float(work.at[idx_max, "profit"]),
+        "brute_median_profit": float(work.at[idx_med, "profit"]),
+        "brute_q075_profit": float(work.at[idx_q75, "profit"]),
+        "brute_q090_profit": float(work.at[idx_q90, "profit"]),
     }
     if "da_profit" in df.columns:
-        da = pd.to_numeric(df["da_profit"], errors="coerce")
-        idc = p - da
+        work["da_profit"] = pd.to_numeric(work["da_profit"], errors="coerce")
+        work["idc_profit"] = work["profit"] - work["da_profit"]
         out.update(
             {
-                "theoretical_max_da_profit": float(da.max()),
-                "brute_median_da_profit": float(da.median()),
-                "brute_q075_da_profit": float(da.quantile(0.75)),
-                "brute_q090_da_profit": float(da.quantile(0.90)),
-                "theoretical_max_idc_profit": float(idc.max()),
-                "brute_median_idc_profit": float(idc.median()),
-                "brute_q075_idc_profit": float(idc.quantile(0.75)),
-                "brute_q090_idc_profit": float(idc.quantile(0.90)),
+                "theoretical_max_da_profit": float(work.at[idx_max, "da_profit"]),
+                "brute_median_da_profit": float(work.at[idx_med, "da_profit"]),
+                "brute_q075_da_profit": float(work.at[idx_q75, "da_profit"]),
+                "brute_q090_da_profit": float(work.at[idx_q90, "da_profit"]),
+                "theoretical_max_idc_profit": float(work.at[idx_max, "idc_profit"]),
+                "brute_median_idc_profit": float(work.at[idx_med, "idc_profit"]),
+                "brute_q075_idc_profit": float(work.at[idx_q75, "idc_profit"]),
+                "brute_q090_idc_profit": float(work.at[idx_q90, "idc_profit"]),
             }
         )
     return out

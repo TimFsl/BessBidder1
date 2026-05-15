@@ -17,7 +17,15 @@ from src.coordinated_multi_market.rolling_intrinsic.training_rolling_intrinsic_q
     simulate_days_stacked_quarterhourly_products,)
 
 
-from src.shared.config import BUCKET_SIZE, C_RATE, MAX_CYCLES_PER_DAY, MIN_TRADES, RTE, START_IDC_STEPS
+from src.shared.config import (
+    BUCKET_SIZE,
+    C_RATE,
+    MAX_CYCLES_PER_DAY,
+    MIN_CYCLE_FRACTION_FOR_IDC_REWARD,
+    MIN_TRADES,
+    RTE,
+    START_IDC_STEPS,
+)
 
 
 # Curriculum: (step_threshold, max_cycles). Steps < threshold get that max_cycles.
@@ -41,8 +49,6 @@ class CustomPPO(PPO):
         super().__init__(*args, **kwargs)
         self.intraday_product_type = intraday_product_type
         self.current_step = 0
-        self.lambda_val = 0.5
-        self._last_ri_reward_per_euro = 0
         self.reward_log_path = reward_log_path
         self.train_log_path = train_log_path
 
@@ -203,7 +209,6 @@ class CustomPPO(PPO):
         ep_profit_idc = []
         ep_reward_combined = []
         ep_reward_da = []
-        ep_reward_advantage = []
 
         for row_start, num_rows in complete_periods.items():
             if num_rows <= 0:
@@ -233,7 +238,10 @@ class CustomPPO(PPO):
 
             run_ri = (
                 self.num_timesteps >= START_IDC_STEPS
-                and self._check_if_complete_cycle(period_volumes)
+                and self.check_if_complete_cycle(
+                    period_volumes,
+                    min_cycle_fraction=MIN_CYCLE_FRACTION_FOR_IDC_REWARD,
+                )
             )
             if run_ri:
                 if self.intraday_product_type == "H":
@@ -270,14 +278,11 @@ class CustomPPO(PPO):
                     combined_rewards.reshape(-1, 1)
                 )
 
-            advantage_reward_per_step = rolling_intrinsic_rewards
-
             ep_profit_combined.append(float(da_profit + ri_stacked_profit))
             ep_profit_da.append(float(da_profit))
             ep_profit_idc.append(float(ri_stacked_profit))
             ep_reward_combined.append(float(np.sum(combined_rewards)))
             ep_reward_da.append(float(np.sum(da_rewards)))
-            ep_reward_advantage.append(float(np.sum(advantage_reward_per_step)))
 
             if self.train_log_path is not None:
                 self._write_train_log_period(
@@ -299,7 +304,6 @@ class CustomPPO(PPO):
                     da_profit=da_profit,
                     ri_stacked_profit=ri_stacked_profit,
                     baseline_profit=baseline_profit,
-                    advantage_reward_per_step=advantage_reward_per_step,
                 )
 
         if ep_profit_combined:
@@ -317,9 +321,6 @@ class CustomPPO(PPO):
             )
             self.logger.record(
                 "episode_reward/day_ahead_sum", float(np.mean(ep_reward_da))
-            )
-            self.logger.record(
-                "episode_reward/advantage_sum", float(np.mean(ep_reward_advantage))
             )
             self.logger.record(
                 "episode_reward/n_episodes_in_rollout", len(ep_profit_combined)
@@ -418,7 +419,6 @@ class CustomPPO(PPO):
         da_profit: float,
         ri_stacked_profit: float,
         baseline_profit: float,
-        advantage_reward_per_step: np.ndarray,
     ) -> None:
         """Append one row per step of this period to the single train log CSV."""
         actions = rollout_buffer.actions[row_start : row_start + num_rows]
@@ -456,7 +456,6 @@ class CustomPPO(PPO):
                 "da_profit_episode": da_profit,
                 "idc_profit_episode": ri_stacked_profit,
                 "baseline_ri": baseline_profit,
-                "advantage_reward": advantage_reward_per_step,
             }
         )
         write_header = not os.path.isfile(self.train_log_path)
@@ -485,8 +484,12 @@ class CustomPPO(PPO):
         return episode_dict
 
     @staticmethod
-    def _check_if_complete_cycle(period_volumes, capacity: float = 1.0,
-                             min_cycle_fraction: float = 0.0):
+    def check_if_complete_cycle(
+        period_volumes,
+        capacity: float = 1.0,
+        min_cycle_fraction: float = 0.0,
+    ) -> bool:
+        """Return True if ``sum(|hourly DA volume|) >= min_cycle_fraction * 2 * capacity``."""
         traded_volume = abs(period_volumes).sum()
         cycle_fraction = traded_volume / (2 * capacity)
         return cycle_fraction >= min_cycle_fraction

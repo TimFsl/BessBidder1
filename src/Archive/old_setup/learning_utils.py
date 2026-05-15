@@ -5,7 +5,7 @@ import pandas as pd
 import os
 from sklearn.preprocessing import MinMaxScaler
 
-from src.shared.config import (
+from src.Archive.old_setup.local_config import (
     START,
     END,
     DATA_PATH,
@@ -19,7 +19,7 @@ def load_input_data(write_test=False) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     # path=f"df_spot_train_{train_start}_{train_end}_with_features_utc.csv"
     # TODOD: USE dynamic as soon as epex 15 problem is solved
-    path = "df_spot_train_2019-01-01_2021-12-31_with_features_utc.csv"
+    path = "df_spot_train_2019-01-01_2025-09-30_with_features_utc.csv"
 
     df_spot_train = pd.read_csv(
         os.path.join(
@@ -101,7 +101,7 @@ def prepare_input_data(
             df[
                 [
                     "epex_spot_60min_de_lu_eur_per_mwh",
-                    "epex_spot_15min_de_lu_eur_per_mwh",
+                    "exaa_15min_de_lu_eur_per_mwh",
                 ]
             ],
         ],
@@ -114,7 +114,7 @@ def prepare_input_data(
         if df.loc[day.isoformat()][
             [
                 "epex_spot_60min_de_lu_eur_per_mwh",
-                "epex_spot_15min_de_lu_eur_per_mwh",
+                "exaa_15min_de_lu_eur_per_mwh",
                 "load_forecast_d_minus_1_1000_total_de_lu_mw",
                 "pv_forecast_d_minus_1_1000_de_lu_mw",
                 "wind_offshore_forecast_d_minus_1_1000_de_lu_mw",
@@ -131,7 +131,7 @@ def prepare_input_data(
         ].isna().any().any() or df.loc[day.isoformat()][
             [
                 "epex_spot_60min_de_lu_eur_per_mwh",
-                "epex_spot_15min_de_lu_eur_per_mwh",
+                "exaa_15min_de_lu_eur_per_mwh",
                 "load_forecast_d_minus_1_1000_total_de_lu_mw",
                 "pv_forecast_d_minus_1_1000_de_lu_mw",
                 "wind_offshore_forecast_d_minus_1_1000_de_lu_mw",
@@ -155,7 +155,7 @@ def prepare_input_data(
             {
                 day.isoformat(): {
                     "price_forecast": np.array(
-                        df.loc[day.isoformat()]["epex_spot_15min_de_lu_eur_per_mwh"]
+                        df.loc[day.isoformat()]["exaa_15min_de_lu_eur_per_mwh"]
                         .astype(np.float32)
                         .values
                     ),

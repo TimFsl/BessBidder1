@@ -55,10 +55,10 @@ RESUME_WITH_NEW_HYPERPARAMS = True
 RESET_TIMESTEPS_ON_RESTART = False
 
 # Source checkpoint (where to load pretrained weights from)
-SOURCE_MODEL_NUMBER = "4"
+SOURCE_MODEL_NUMBER = "7"
 SOURCE_MODEL_CHECKPOINT = "ppo_stacked_checkpoint_1000000_steps"
 # Target run folder (where to write logs/models/scaler for this run)
-TARGET_MODEL_NUMBER = "5"
+TARGET_MODEL_NUMBER = "8"
 
 # Override if summaries live elsewhere (default: config.PRECOMPUTED_DA_RI_SUMMARY_DIR)
 PRECOMPUTED_SUMMARY_DIR = None  # e.g. os.path.join("coordinated_market_upper_bound_analysis", "results")
@@ -150,7 +150,8 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=torch.nn.ReLU,
-        net_arch=dict(pi=[64, 64, 64, 64], vf=[64, 64, 64, 64]),
+        #net_arch=dict(pi=[64, 64, 64, 64], vf=[64, 64, 64, 64]),
+        net_arch=dict(pi=[64, 64], vf=[64, 64]),
         log_std_init=-0.5,
     )
 

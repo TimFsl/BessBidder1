@@ -20,8 +20,17 @@ DATA_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
 DATA_END   = pd.Timestamp(year=2025, month=9, day=30, tz="Europe/Berlin")
 
 # Train data timeframe
+# Set 1 = 2019-01-01 to 2021-03-31
 TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
 TRAIN_END   = pd.Timestamp(year=2021, month=3, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
+
+# Set 2 = 2023-01-01 to 2025-03-31
+#TRAIN_START = pd.Timestamp(year=2023, month=1, day=1, tz="Europe/Berlin")
+#TRAIN_END   = pd.Timestamp(year=2025, month=3, day=31, tz="Europe/Berlin") + pd.Timedelta(days=1)
+
+# Set 3 = 2019-01-01 to 2024-09-30
+# TRAIN_START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
+# TRAIN_END   = pd.Timestamp(year=2024, month=9, day=30, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # Validation timeframe
 VAL_START = pd.Timestamp(year=2021, month=4, day=1, tz="Europe/Berlin")
@@ -41,12 +50,22 @@ VAL_HOLDOUT_N = 90             # number of days or ISO weeks held out from train
 VAL_HOLDOUT_SEED = 42        # default: reuse global seed # 42
 
 # Test timeframe
-TEST_START = pd.Timestamp(year=2024, month=10, day=1, tz="Europe/Berlin")
+
+# Set 1 01.04.2021-30.09.2021
+#TEST_START = pd.Timestamp(year=2021, month=4, day=1, tz="Europe/Berlin")
+#TEST_END   = pd.Timestamp(year=2021, month=9, day=30, tz="Europe/Berlin") + pd.Timedelta(days=1)
+
+# Set 2 01.04.2025-30.09.2025
+TEST_START = pd.Timestamp(year=2025, month=4, day=1, tz="Europe/Berlin")
 TEST_END   = pd.Timestamp(year=2025, month=9, day=30, tz="Europe/Berlin") + pd.Timedelta(days=1)
+
+# Set 3 01.10.2024-30.09.2025
+# TEST_START = pd.Timestamp(year=2024, month=10, day=1, tz="Europe/Berlin")
+# TEST_END   = pd.Timestamp(year=2025, month=9, day=30, tz="Europe/Berlin") + pd.Timedelta(days=1)
 
 # For single market day ahead optimizer, rolling intrinsic and myopic market
 START = pd.Timestamp(year=2019, month=1, day=1, tz="Europe/Berlin")
-END   = pd.Timestamp(year=2025, month=9, day=30, tz="Europe/Berlin")  + pd.Timedelta(days=1)
+END   = pd.Timestamp(year=2021, month=3, day=30, tz="Europe/Berlin")  + pd.Timedelta(days=1)
 
 
 # Problematic dates that need to be removed from the data for the rolling intrinsic algorithm to work
@@ -80,9 +99,15 @@ LOGGING_PATH_MYOPIC = Path("output/myopic_multi_market/")
 # Column used as DA "forecast" in the env (for ablation: epex = realized, exaa = EXAA forecast)
 DA_PRICE_FORECAST_COLUMN = "exaa_15min_de_lu_eur_per_mwh" #"epex_spot_60min_de_lu_eur_per_mwh"  # or "exaa_15min_de_lu_eur_per_mwh"
 SEED = 42
-TRAINING_STEPS_INTELLIGENT = 10_000_000
-TRAINING_STEPS_BASIC = 10_000_000
-START_IDC_STEPS = 0
+TRAINING_STEPS_INTELLIGENT = 5_000_000 #10_000_000
+TRAINING_STEPS_BASIC = 5_000_000 # 10_000_000
+START_IDC_STEPS = 1_000_000 # start adding intraday reward after this many training steps (for coordinated PPO)
+
+# Coordinated PPO: only add intraday (rolling intrinsic) reward when DA episode
+# has at least this fraction of one "cycle" in cumulative absolute hourly volume:
+# sum(|q_h|) / (2 * battery_capacity) >= MIN_CYCLE_FRACTION_FOR_IDC_REWARD.
+# 1.0 requires aggregate |volume| over the day >= 2 * capacity (normalized env: 2.0).
+MIN_CYCLE_FRACTION_FOR_IDC_REWARD = 1.0
 
 DATA_PATH = Path("data", "simplified_data_jan_with_exaa_and_id_full")
 

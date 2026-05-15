@@ -42,12 +42,29 @@ class CoordinatedRLModelSpec:
 # Model id = subfolder name under output/coordinated_multi_market/logging/<id>/
 # TensorBoard run names (PPO_*) are fixed per saved run; event file basename varies by machine.
 RL_MODEL_REGISTRY: dict[str, CoordinatedRLModelSpec] = {
-    "0": CoordinatedRLModelSpec("0", _d("2019-01-01"), _d("2021-03-31"), "PPO_0_1"),
-    "1": CoordinatedRLModelSpec("1", _d("2019-01-01"), _d("2021-03-31"), "PPO_1_0"),
-    "2": CoordinatedRLModelSpec("2", _d("2023-01-01"), _d("2025-03-01"), "PPO_2_1"),
-    "3": CoordinatedRLModelSpec("3", _d("2023-01-01"), _d("2025-03-01"), "PPO_3_0"),
-    "4": CoordinatedRLModelSpec("4", _d("2019-01-01"), _d("2024-09-30"), "PPO_4_1"),
-    "5": CoordinatedRLModelSpec("5", _d("2019-01-01"), _d("2024-09-30"), "PPO_5_0"),
+    # Extended models
+    "0": CoordinatedRLModelSpec("0", _d("2019-01-01"), _d("2021-03-31"), "PPO_0_1"), # extended model DA-only pretraining on set 1
+    "1": CoordinatedRLModelSpec("1", _d("2019-01-01"), _d("2021-03-31"), "PPO_1_0"), # extended model DA+IDC training on set 1
+    "2": CoordinatedRLModelSpec("2", _d("2023-01-01"), _d("2025-03-31"), "PPO_2_1"), # extended model DA-only pretraining on set 2
+    "3": CoordinatedRLModelSpec("3", _d("2023-01-01"), _d("2025-03-31"), "PPO_3_0"), # extended model DA+IDC training on set 2
+    "4": CoordinatedRLModelSpec("4", _d("2019-01-01"), _d("2024-09-30"), "PPO_4_1"), # extended model DA-only pretraining on set 3
+    "5": CoordinatedRLModelSpec("5", _d("2019-01-01"), _d("2024-09-30"), "PPO_5_0"), # extended model DA+IDC training on set 3
+    "6": CoordinatedRLModelSpec("6", _d("2019-01-01"), _d("2021-03-31"), "PPO_6_0"), # extended model DA+IDC training on set 1 with 10 Mio steps
+    # Baseline models comparison Set 1
+    "7": CoordinatedRLModelSpec("7", _d("2019-01-01"), _d("2021-03-31"), "PPO_7_1"), # baseline model DA-only pretraining on set 1
+    "8": CoordinatedRLModelSpec("8", _d("2019-01-01"), _d("2021-03-31"), "PPO_8_0"), # baseline model DA+IDC training on set 1
+    "9": CoordinatedRLModelSpec("9", _d("2019-01-01"), _d("2021-03-31"), "PPO_9_1"), # baseline model extended observation space DA-only on set 1
+    "10": CoordinatedRLModelSpec("10", _d("2019-01-01"), _d("2021-03-31"), "PPO_10_0"), # baseline model extended observation DA+IDC training on set 1
+    "11": CoordinatedRLModelSpec("11", _d("2019-01-01"), _d("2021-03-31"), "PPO_11_0"), # baseline model open positions DA+IDC training on set 1
+    "12": CoordinatedRLModelSpec("12", _d("2019-01-01"), _d("2021-03-31"), "PPO_12_0"), # baseline model counterfactual reward DA+IDC training on set 1
+    # Baseline models comparison Set 1
+    "13": CoordinatedRLModelSpec("13", _d("2023-01-01"), _d("2025-03-31"), "PPO_13_1"), # baseline model DA-only pretraining on set 2
+    "14": CoordinatedRLModelSpec("14", _d("2023-01-01"), _d("2025-03-31"), "PPO_14_0"), # baseline model extended observation space DA-only pretraining on set 2
+    "15": CoordinatedRLModelSpec("15", _d("2023-01-01"), _d("2025-03-31"), "PPO_15_0"), # baseline model DA+IDC training on set 1
+    "16": CoordinatedRLModelSpec("16", _d("2023-01-01"), _d("2025-03-31"), "PPO_16_0"), # baseline model extended observation DA+IDC training on set 2
+    "17": CoordinatedRLModelSpec("17", _d("2023-01-01"), _d("2025-03-31"), "PPO_17_0"), # baseline model open positions DA+IDC training on set 2
+    "18": CoordinatedRLModelSpec("18", _d("2023-01-01"), _d("2025-03-31"), "PPO_18_0"), # baseline model counterfactual reward DA+IDC training on set 2
+
 }
 
 

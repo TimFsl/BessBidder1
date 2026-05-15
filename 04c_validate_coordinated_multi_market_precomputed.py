@@ -23,15 +23,15 @@ import torch
 from loguru import logger
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from src.coordinated_multi_market.v3_counterfactual_reward_lookup.basic_battery_dam_env import (
+from src.coordinated_multi_market.v13_baseline_counterfactual_reward.basic_battery_dam_env import (
     BasicBatteryDAM,
 )
-from src.coordinated_multi_market.v3_counterfactual_reward_lookup.custom_ppo import CustomPPO
-from src.coordinated_multi_market.v3_counterfactual_reward_lookup.learning_utils import (
+from src.coordinated_multi_market.v13_baseline_counterfactual_reward.custom_ppo import CustomPPO
+from src.coordinated_multi_market.v13_baseline_counterfactual_reward.learning_utils import (
     load_input_data,
     prepare_input_data,
 )
-from src.coordinated_multi_market.v3_counterfactual_reward_lookup.precomputed_summary_lookup import (
+from src.coordinated_multi_market.v13_baseline_counterfactual_reward.precomputed_summary_lookup import (
     PrecomputedSummaryLookup,
     realized_volumes_to_schedule,
 )
@@ -186,7 +186,7 @@ def _build_da_schedule_table(df_behaviour: pd.DataFrame) -> pd.DataFrame:
 
 if __name__ == "__main__":
     # -------- Same knobs as 04c_validate_coordinated_multi_market.py --------
-    model_number = "0"
+    model_number = "18"
     start_checkpoint = "ppo_stacked_checkpoint_100000_steps"
     STEP_INCREMENT = 100_000
 

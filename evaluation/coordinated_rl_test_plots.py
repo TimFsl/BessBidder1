@@ -18,7 +18,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
+from matplotlib.ticker import FuncFormatter
 
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
@@ -27,6 +29,7 @@ if str(_REPO) not in sys.path:
 from evaluation.soc_profiles import (
     SOC_PLOT_COLORS,
     build_soc_profile_matrix,
+    delivery_day_from_trades_filename,
     is_da_execution,
     plot_mean_quantile_soc,
     prep_trades_for_soc,
@@ -34,9 +37,16 @@ from evaluation.soc_profiles import (
 )
 
 
-def daily_da_idc_profit_from_trades_file(path: Path | str) -> tuple[float, float]:
+def daily_da_idc_profit_from_trades_file(
+    path: Path | str,
+    *,
+    delivery_day: pd.Timestamp | None = None,
+) -> tuple[float, float]:
     """
-    Sum ``profit`` for rows with DA execution (13:00 Europe/Berlin) vs all other rows.
+    Sum ``profit`` for rows with DA execution vs all other rows.
+
+    DA execution is defined as ``13:00`` on ``delivery_day - 1`` (Europe/Berlin).
+    If ``delivery_day`` is omitted, it is inferred from ``trades_YYYY-MM-DD.csv``.
 
     Returns ``(profit_da_eur, profit_intraday_eur)``.
     """
@@ -48,7 +58,8 @@ def daily_da_idc_profit_from_trades_file(path: Path | str) -> tuple[float, float
         return 0.0, 0.0
     df = prep_trades_for_soc(df)
     pr = pd.to_numeric(df["profit"], errors="coerce").fillna(0.0)
-    da_mask = is_da_execution(df["execution_time"])
+    dd = delivery_day_from_trades_filename(p) if delivery_day is None else pd.Timestamp(delivery_day)
+    da_mask = is_da_execution(df["execution_time"], delivery_day=dd)
     return float(pr[da_mask].sum()), float(pr[~da_mask].sum())
 
 
@@ -250,6 +261,7 @@ def plot_cumulative_da_idc_stacked(
 
     ax.set_xlabel("Day number")
     ax.set_ylabel("Cumulative profit (€)")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x:,.0f}"))
     if show_grid:
         ax.grid(True, alpha=0.35)
     else:
@@ -274,10 +286,12 @@ def cumulative_profit_and_soc_figure_from_trades_dir(
     *,
     q_low: float = 0.25,
     q_high: float = 0.75,
-    figsize: tuple[float, float] = (12.5, 4.8),
+    figsize: tuple[float, float] = (12.5, 6.0),
     width_ratios: tuple[float, float] = (1.35, 1.0),
     on_missing_trades: str = "warn",
     spine_linewidth: float = 1.0,
+    show_top_legends: bool = False,
+    reserve_top_legend_space: bool = True,
     **soc_kw,
 ):
     """
@@ -330,6 +344,23 @@ def cumulative_profit_and_soc_figure_from_trades_dir(
         tick_labelsize=_tick,
         legend_fontsize=_leg,
     )
+    if show_top_legends:
+        line_legend_handles = [
+            Line2D([0], [0], color="#F92C85", lw=2.5, label="IDC profit"),
+            Line2D([0], [0], color="#5EBEC4", lw=2.5, label="DA profit"),
+        ]
+        ax_cum.legend(
+            handles=line_legend_handles,
+            loc="lower right",
+            bbox_to_anchor=(1.01, 1.01),
+            borderaxespad=0.25,
+            fontsize=_tick,
+            frameon=True,
+            framealpha=0.95,
+            facecolor="white",
+            edgecolor="#666666",
+            fancybox=True,
+        )
 
     plot_mean_quantile_soc(
         summary_da,
@@ -345,12 +376,58 @@ def cumulative_profit_and_soc_figure_from_trades_dir(
         tick_labelsize=_tick,
         legend_fontsize=_leg,
     )
+    # Put a compact SoC legend above the SoC panel, right-aligned in a boxed style.
+    soc_handles, soc_labels = ax_soc.get_legend_handles_labels()
+    if soc_handles and show_top_legends:
+        renamed: list[tuple[object, str]] = []
+        for h, lbl in zip(soc_handles, soc_labels):
+            low = str(lbl).lower()
+            if "actual soc" in low and "mean" not in low:
+                name = "Quantiles IDC"
+            elif "actual soc" in low and "mean" in low:
+                name = "Mean IDC"
+            elif "da soc" in low and "mean" not in low:
+                name = "Quantiles DA"
+            elif "da soc" in low and "mean" in low:
+                name = "Mean DA"
+            else:
+                name = str(lbl)
+            renamed.append((h, name))
+        wanted_order = ("Quantiles IDC", "Mean IDC", "Quantiles DA", "Mean DA")
+        ordered: list[tuple[object, str]] = []
+        for want in wanted_order:
+            for h, lbl in renamed:
+                if lbl == want:
+                    ordered.append((h, lbl))
+                    break
+        if not ordered:
+            ordered = renamed
+        ax_soc.legend(
+            [h for h, _ in ordered],
+            [lbl for _, lbl in ordered],
+            loc="lower right",
+            bbox_to_anchor=(1.01, 1.01),
+            borderaxespad=0.25,
+            fontsize=_tick,
+            frameon=True,
+            framealpha=0.95,
+            facecolor="white",
+            edgecolor="#666666",
+            fancybox=True,
+        )
+    ax_soc.set_ylabel("")
 
     for ax in (ax_cum, ax_soc):
         for spine in ax.spines.values():
             spine.set_linewidth(spine_linewidth)
 
-    fig.tight_layout(w_pad=2.0)
+    # Use fixed subplot geometry so the panel area is identical across
+    # show_top_legends=True/False variants (tight_layout is content-aware and
+    # would otherwise resize axes differently depending on legend artists).
+    if reserve_top_legend_space:
+        fig.subplots_adjust(left=0.08, right=0.98, bottom=0.13, top=0.80, wspace=0.22)
+    else:
+        fig.subplots_adjust(left=0.08, right=0.98, bottom=0.13, top=0.96, wspace=0.22)
     return fig, ax_cum, ax_soc, profit_table_plot, mat_da, mat_all, summary_da, summary_all
 
 
@@ -362,10 +439,12 @@ def coordinated_rl_cumulative_profit_and_soc_figure(
     bs_folder: str = "bs15cr1rto0.86mc365mt10",
     q_low: float = 0.25,
     q_high: float = 0.75,
-    figsize: tuple[float, float] = (12.5, 4.8),
+    figsize: tuple[float, float] = (12.5, 6.0),
     width_ratios: tuple[float, float] = (1.35, 1.0),
     on_missing_trades: str = "warn",
     spine_linewidth: float = 1.0,
+    show_top_legends: bool = False,
+    reserve_top_legend_space: bool = True,
     **soc_kw,
 ):
     """
@@ -386,6 +465,8 @@ def coordinated_rl_cumulative_profit_and_soc_figure(
         width_ratios=width_ratios,
         on_missing_trades=on_missing_trades,
         spine_linewidth=spine_linewidth,
+        show_top_legends=show_top_legends,
+        reserve_top_legend_space=reserve_top_legend_space,
         **soc_kw,
     )
 
@@ -397,10 +478,12 @@ def myopic_cumulative_profit_and_soc_figure(
     bs_folder: str = "bs15cr1rto0.86mc365mt10",
     q_low: float = 0.25,
     q_high: float = 0.75,
-    figsize: tuple[float, float] = (12.5, 4.8),
+    figsize: tuple[float, float] = (12.5, 6.0),
     width_ratios: tuple[float, float] = (1.35, 1.0),
     on_missing_trades: str = "warn",
     spine_linewidth: float = 1.0,
+    show_top_legends: bool = True,
+    reserve_top_legend_space: bool = True,
     **soc_kw,
 ):
     """
@@ -421,5 +504,7 @@ def myopic_cumulative_profit_and_soc_figure(
         width_ratios=width_ratios,
         on_missing_trades=on_missing_trades,
         spine_linewidth=spine_linewidth,
+        show_top_legends=show_top_legends,
+        reserve_top_legend_space=reserve_top_legend_space,
         **soc_kw,
     )

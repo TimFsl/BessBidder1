@@ -53,7 +53,7 @@ class BasicBatteryDAM(gym.Env):
 
        #self._remaining_cycles = 1
         self.action_space = spaces.Discrete(7)
-        self.observation_space = spaces.Box(-1, 1, shape=(50,), dtype=np.float32)
+        self.observation_space = spaces.Box(-1, 1, shape=(43,), dtype=np.float32)
         self._current_time_step = 0
         self._realized_quantity_t_minus_1 = 0
         self._total_profit = 0.0
@@ -98,14 +98,6 @@ class BasicBatteryDAM(gym.Env):
                 self._spread_id_full_da_std,
                 self._spread_id_full_da_min,
                 self._spread_id_full_da_max,
-                # new EXAA features
-                self._exaa_pf_daily_mean,
-                self._exaa_pf_daily_std,
-                self._exaa_pf_daily_min,
-                self._exaa_pf_daily_max,
-                self._exaa_pf_daily_spread,
-                self._exaa_pf_daily_diff_sum,
-                self._exaa_pf_daily_diff_max,
             ),
             axis=None,
             dtype=np.float32,
@@ -362,15 +354,6 @@ class BasicBatteryDAM(gym.Env):
         self._spread_id_full_da_std = float(self._input_data[self._random_day]["spread_id_full_da_std"][0])
         self._spread_id_full_da_min = float(self._input_data[self._random_day]["spread_id_full_da_min"][0])
         self._spread_id_full_da_max = float(self._input_data[self._random_day]["spread_id_full_da_max"][0])
-
-        # NEW: EXAA-derived daily features (globally scaled)
-        self._exaa_pf_daily_mean = float(self._input_data[self._random_day]["exaa_pf_daily_mean"][0])
-        self._exaa_pf_daily_std = float(self._input_data[self._random_day]["exaa_pf_daily_std"][0])
-        self._exaa_pf_daily_min = float(self._input_data[self._random_day]["exaa_pf_daily_min"][0])
-        self._exaa_pf_daily_max = float(self._input_data[self._random_day]["exaa_pf_daily_max"][0])
-        self._exaa_pf_daily_spread = float(self._input_data[self._random_day]["exaa_pf_daily_spread"][0])
-        self._exaa_pf_daily_diff_sum = float(self._input_data[self._random_day]["exaa_pf_daily_diff_sum"][0])
-        self._exaa_pf_daily_diff_max = float(self._input_data[self._random_day]["exaa_pf_daily_diff_max"][0])
 
         # Timestamps
         self._timestamps = self._input_data[self._random_day]["timestamps"]
